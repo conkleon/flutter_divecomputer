@@ -1,5 +1,5 @@
 name: dive_computer
-description: "A Flutter plugin for communication with dive computers."
+description: "A Flutter plugin bridging dive computers (USB/serial, and eventually Bluetooth/BLE) to Flutter apps, built for the Petousis/Nautilus Dive Log app."
 version: 0.0.1
 homepage: "https://divenote.app"
 repository: "https://github.com/DiveNote/dive_computer"
