@@ -20,6 +20,8 @@ dependencies:
     # the parent directory to use the current plugin's version.
     path: ../
 
+  universal_ble: '>=1.0.0 <3.0.0'
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
