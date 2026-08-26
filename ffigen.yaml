@@ -10,6 +10,10 @@ headers:
     - 'native/include/libdivecomputer/iterator.h'
     - 'native/include/libdivecomputer/serial.h'
     - 'native/include/libdivecomputer/parser.h'
+    - 'native/include/libdivecomputer/custom.h'
+    - 'native/include/libdivecomputer/ble.h'
+compiler-opts:
+  - '-Inative/include'
 preamble: |
   // ignore_for_file: always_specify_types, unused_field, unused_element
   // ignore_for_file: camel_case_types
