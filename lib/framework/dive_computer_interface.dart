@@ -1,3 +1,4 @@
+import 'package:dive_computer/types/ble_scan_result.dart';
 import 'package:dive_computer/types/computer.dart';
 import 'package:dive_computer/types/dive.dart';
 
@@ -21,6 +22,18 @@ abstract class DiveComputerInterface {
     ComputerTransport transport, [
     String? lastFingerprint,
   ]) {
+    throw UnimplementedError();
+  }
+
+  Stream<BleScanResult> scanForBleDevices() {
+    throw UnimplementedError();
+  }
+
+  Future<void> connectBle(BleScanResult device) {
+    throw UnimplementedError();
+  }
+
+  Future<void> disconnectBle() {
     throw UnimplementedError();
   }
 }

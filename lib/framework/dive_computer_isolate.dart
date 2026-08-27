@@ -4,6 +4,10 @@ import 'dart:developer' as developer;
 
 import 'package:dive_computer/framework/dive_computer_interface.dart';
 import 'package:dive_computer/framework/dive_computer_ffi.dart';
+import 'package:dive_computer/framework/ble/ble_bridge_state.dart';
+import 'package:dive_computer/framework/ble/ble_central.dart';
+import 'package:dive_computer/framework/ble/ble_transport.dart';
+import 'package:dive_computer/types/ble_scan_result.dart';
 import 'package:dive_computer/types/computer.dart';
 import 'package:dive_computer/types/dive.dart';
 import 'package:flutter/foundation.dart';
@@ -19,6 +23,16 @@ enum DiveComputerMethod {
 
 typedef IsolateMessage = (DiveComputerMethod method, List<dynamic> args);
 
+/// Sent by the background isolate once it has fully returned from
+/// [DiveComputerFfi.download] (past its own iostream-close finally block) for a
+/// BLE transfer — only then is it safe for the main isolate to free the bridge's
+/// shared native memory. See the design spec's "no leaks, explicit two-phase
+/// teardown".
+class _BleBridgeReleased {
+  const _BleBridgeReleased(this.address);
+  final int address;
+}
+
 class DiveComputer implements DiveComputerInterface {
   late ReceivePort _receivePort, _errorPort;
   late Completer<SendPort> _sendPort;
@@ -28,6 +42,9 @@ class DiveComputer implements DiveComputerInterface {
 
   Completer<List<Computer>>? _supportedComputers;
   Completer<List<Dive>>? _downloadedDives;
+
+  final BleTransport _bleTransport = BleTransport(UniversalBleCentral());
+  Completer<void>? _bleBridgeReleased;
 
   DiveComputer._() {
     _receivePort = ReceivePort();
@@ -46,6 +63,8 @@ class DiveComputer implements DiveComputerInterface {
         _supportedComputers?.complete(message);
       } else if (message is List<Dive>) {
         _downloadedDives?.complete(message);
+      } else if (message is _BleBridgeReleased) {
+        _bleBridgeReleased?.complete();
       } else if (message is Error || message is Exception) {
         if (_supportedComputers?.isCompleted == false) {
           _supportedComputers?.completeError(message);
@@ -86,16 +105,44 @@ class DiveComputer implements DiveComputerInterface {
   }
 
   @override
+  Stream<BleScanResult> scanForBleDevices() => _bleTransport.scanForDevices();
+
+  @override
+  Future<void> connectBle(BleScanResult device) =>
+      _bleTransport.connect(device);
+
+  @override
+  Future<void> disconnectBle() => _bleTransport.disconnect();
+
+  @override
   Future<List<Dive>> download(
     Computer computer,
     ComputerTransport transport, [
     String? lastFingerprint,
   ]) async {
+    BleBridge? bridge;
+    if (transport == ComputerTransport.ble) {
+      if (!_bleTransport.isConnected) {
+        throw StateError(
+            'download() with ComputerTransport.ble requires connectBle() '
+            'to have succeeded first');
+      }
+      bridge = BleBridge.allocate();
+      _bleTransport.attachBridge(bridge);
+      _bleBridgeReleased = Completer<void>();
+    }
     await _send((
       DiveComputerMethod.download,
-      [computer, transport, lastFingerprint],
+      [computer, transport, lastFingerprint, bridge?.address],
     ));
-    return (_downloadedDives = Completer()).future;
+    try {
+      return await (_downloadedDives = Completer()).future;
+    } finally {
+      if (bridge != null) {
+        await _bleBridgeReleased!.future;
+        bridge.dispose();
+      }
+    }
   }
 }
 
@@ -135,10 +182,18 @@ _spawnIsolate(SendPort sendPort) {
           final computer = message.$2[0] as Computer;
           final transport = message.$2[1] as ComputerTransport;
           final lastFingerprint = message.$2[2] as String?;
+          final bleBridgeAddress = message.$2[3] as int?;
           DiveComputerFfi.divesCallback = (dives) {
             sendPort.send(dives);
           };
-          DiveComputerFfi.download(computer, transport, lastFingerprint);
+          try {
+            DiveComputerFfi.download(
+                computer, transport, lastFingerprint, bleBridgeAddress);
+          } finally {
+            if (bleBridgeAddress != null) {
+              sendPort.send(_BleBridgeReleased(bleBridgeAddress));
+            }
+          }
           break;
         default:
           throw UnimplementedError('Message not implemented: $message');
