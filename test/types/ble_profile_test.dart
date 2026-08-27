@@ -18,17 +18,13 @@ void main() {
   });
 
   group('BleProfiles', () {
-    test('known starts empty — no vendor profile has been verified yet', () {
-      expect(BleProfiles.known, isEmpty);
-    });
-
     test('match returns null when nothing in known matches', () {
-      expect(BleProfiles.match('anything'), isNull);
+      expect(BleProfiles.match('Suunto EON Steel'), isNull);
     });
 
     test('match returns the first matching profile in known', () {
       // Exercises the registry mechanism itself without depending on
-      // BleProfiles.known's real (currently empty) contents.
+      // BleProfiles.known's real contents.
       const a = BleProfile(
         namePattern: 'foo',
         serviceUuid: 's1',
@@ -37,6 +33,15 @@ void main() {
         writeWithResponse: true,
       );
       expect(a.matchesName('foobar'), isTrue);
+    });
+
+    test('Mares BlueLink profile is registered and matches a Sirius by name',
+        () {
+      final matched = BleProfiles.match('Mares Sirius');
+      expect(matched, same(BleProfiles.maresBluelink));
+      expect(matched!.serviceUuid, '544e326b-5b72-c6b0-1c46-41c1bc448118');
+      expect(matched.writeWithResponse, isFalse);
+      expect(matched.vendorHint, 'Mares');
     });
   });
 }

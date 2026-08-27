@@ -32,16 +32,47 @@ class BleProfile {
 
 /// Registry of BLE GATT profiles this plugin knows how to talk to.
 ///
-/// `known` intentionally starts empty: libdivecomputer's headers contain no
-/// GATT UUID table (see the design spec's Background section), so every
-/// entry here has to be verified against a real device before it's added.
+/// libdivecomputer's headers contain no GATT UUID table (see the design
+/// spec's Background section), so every entry here is derived from external
+/// references (Subsurface's `qt-ble.cpp`, vendor protocol write-ups) and
+/// should be treated as unverified until confirmed against real hardware.
 /// Scanning only surfaces devices matching a `known` profile — see
-/// BleTransport.scanForDevices() — so an empty registry means "nothing
-/// recognized yet", not a bug.
+/// [BleTransport.scanForDevices] — so a device that never appears in a scan
+/// most likely just needs its [BleProfile.namePattern] adjusted here.
 class BleProfiles {
   BleProfiles._();
 
-  static const List<BleProfile> known = [];
+  static const List<BleProfile> known = [maresBluelink];
+
+  /// Mares BLE dive computers (`DC_FAMILY_MARES_ICONHD`) — the family that
+  /// covers the **Sirius** / **Sirius L** (BLE-only, libdivecomputer models
+  /// 0x2F / 0x33), plus Quad / Quad Ci / Quad 2, Genius, Smart Air,
+  /// Puck Pro+ / Puck 4, and others.
+  ///
+  /// GATT layout (a.k.a. the "Mares BlueLink Pro" service — native-BLE
+  /// models like the Sirius expose the same service):
+  ///   service : 544e326b-5b72-c6b0-1c46-41c1bc448118
+  ///   write   : 99a91ebd-b21f-1689-bb43-681f1f55e966  (write-without-response)
+  ///   notify  : 1d1aae28-d2a8-91a1-1242-9d2973fbe571  (notify)
+  /// Source: Subsurface `core/qt-ble.cpp` (service) + Mares Icon HD BLE
+  /// protocol write-ups (characteristics). Subsurface itself picks the
+  /// characteristics by GATT property rather than by fixed UUID, so if a
+  /// future Mares model differs, discover the real UUIDs with a BLE
+  /// inspector (nRF Connect) and add a second entry.
+  ///
+  /// `namePattern` is a best guess — confirm the Sirius's actual advertised
+  /// name during a scan and widen/narrow this if needed. `productHint`
+  /// targets the plain Sirius; the Icon HD backend reads the true model
+  /// from the device handshake, so a Sirius L should still enumerate.
+  static const maresBluelink = BleProfile(
+    namePattern: 'Sirius',
+    serviceUuid: '544e326b-5b72-c6b0-1c46-41c1bc448118',
+    writeCharUuid: '99a91ebd-b21f-1689-bb43-681f1f55e966',
+    notifyCharUuid: '1d1aae28-d2a8-91a1-1242-9d2973fbe571',
+    writeWithResponse: false,
+    vendorHint: 'Mares',
+    productHint: 'Sirius',
+  );
 
   /// UNVERIFIED reference profile — the Nordic UART Service is a standard,
   /// well-documented BLE serial profile several dive-computer vendors build
