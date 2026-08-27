@@ -2387,3 +2387,69 @@ git checkout -- lib/types/ble_profile.dart
 - [ ] **Step 6: Report results**
 
 Summarize what was observed (connected? bytes flowed both ways? clean failure on the parse step? clean handling of a mid-transfer disconnect?) so any issues can be triaged before this plan is considered complete.
+
+---
+
+## Deferred hardening pass (post-implementation — filed 2026-08-27)
+
+Tasks 5–12 were implemented and committed to `main` (commits `9c1239e`..`70af80b`). Per-task
+reviews + a final whole-branch review ran; 3 Critical + 5 Important merge-blocking findings were
+fixed in commit `55eb09b`. The following were **deliberately deferred** by the final review +
+controller (none corrupt data or hang) — do these before the first hardware-verified `BleProfile`
+lands, ideally alongside Task 13:
+
+- **#4 Single-flight guard** (spec requires it): `BleTransport.connect()` has no in-flight guard —
+  a second connect silently overwrites `_connection`/`_connStateSub`/`_profile`, orphaning the
+  first. Two concurrent `download()`s clobber `_downloadedDives`/`_bleBridgeReleased`. Add a `_busy`
+  flag on both, reject with a clear error.
+- **#8 Ring overflow not surfaced**: `BleTransport` logs `severe` on a short `pushInbound` but the
+  bg `read` callback still returns the truncated data as `DC_STATUS_SUCCESS`. Add a sticky overflow
+  flag in `BleBridgeState` that `_read` converts to `DC_STATUS_IO` (spec: "log severe AND return
+  DC_STATUS_IO").
+- **#9 Untyped failures**: everything throws bare `StateError`. Spec demands typed
+  device-not-found / connect-failed / service-mismatch / mid-transfer-disconnect / overflow /
+  timeout. Add a `BleException` hierarchy in `lib/types/`, export from the barrel, switch the
+  example app on it.
+- **#10 Profile-mismatch handling**: the mismatch is thrown *inside* the retry loop → a genuine
+  wrong-profile device burns 3 connect cycles + 750 ms backoff and reports a misleading "after 3
+  attempts". Also the check only inspects the service UUID — `BleGattService.characteristicUuids`
+  is collected then never used, so a missing write/notify characteristic fails deep at the first
+  GATT write instead of at connect. And the `warning` log should name both mismatched UUIDs.
+  Fix: rethrow mismatch outside the loop; validate `writeCharUuid`/`notifyCharUuid` presence.
+- **#12** `DiveComputerFfi._connectBle`: wrap `dc_custom_open` in try/finally — leaks the
+  `callbacks` struct + the one-pointer `iostream` cell on failure, and leaks the `iostream` cell
+  even on success. Add a comment that freeing `callbacks` right after open is safe only because
+  `dc_custom_open` copies the struct by value.
+- **#13** `_read` returns `DC_STATUS_IO` when `isClosed` even if bytes are still buffered —
+  discards the final payload of a device-initiated graceful close. Drain first.
+- **#14** `_write` timeout logs at `warning`; spec reserves `warning` for retries. Use `finest`
+  (consistent with `_read`).
+- **#15** `_handleDisconnect` logs `warning('disconnected unexpectedly')` on *intentional*
+  `disconnect()` too (the state stream emits `false`). Distinguish intentional teardown.
+- **#17** `example/lib/main.dart`: `setState` after `await` with no `mounted` guard; `await
+  dc.disconnectBle()` in a `finally` can mask the original error.
+- **#18** `FakeBleConnection` stream controllers never closed; `const`-vs-`final` lint in
+  `ble_scan_result_test.dart:14/16` and `ble_bridge_callbacks_test.dart:119`; add `.gitattributes`
+  with `*.dart text eol=lf` to silence the Windows LF↔CRLF churn.
+- **#19** The spec's `SendPort` wake-up ping for the mailbox (Data flow steps 4–5) was replaced
+  with the bare 4 ms `Timer.periodic` tick — acceptable, recorded here as a deliberate deviation.
+- **#20** `BleProfiles.known` is empty (intentional, per Task 4) so runtime scanning surfaces
+  nothing — the example app's "Scan for known BLE devices" always shows zero results until a
+  profile is added. Add a one-line note in the example screen so the Task 13 tester doesn't chase
+  a phantom bug.
+- **Inspection-only verification** (no automated test was feasible — spawned isolate + real
+  libdivecomputer, or `UniversalBle`'s static platform facade with no injection seam): fixes for
+  final-review findings #3, #5, #6, #7 were verified by code inspection, not tests. Re-check them
+  against real hardware behaviour during Task 13.
+- **Pre-existing / inherent-to-design** (document, don't necessarily fix): lock-free cross-isolate
+  reads rely on `sleep()` as an implicit memory barrier (Decision 2); a hard isolate crash leaves
+  `download()` awaiting forever + leaks the bridge (same failure class as the pre-existing
+  `_downloadedDives` hang); `BleTransport.attachBridge` throwing after it has set `_bridge`/
+  `_notifySub` leaves a dangling mailbox timer.
+- **Flaky test**: `test/framework/ble/ble_bridge_state_test.dart` "waitForInbound times out when
+  nothing arrives" asserts wall-clock `>= 30 ms` and occasionally measures 29 ms under load.
+  Widen the bound or use fake-async.
+
+**Windows build was not verified** in the implementation environment (no Visual Studio C++
+toolchain). Run `cd example && flutter build windows --debug` on a configured machine before
+Task 13.
