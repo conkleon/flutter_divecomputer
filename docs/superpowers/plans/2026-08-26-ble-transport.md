@@ -2412,10 +2412,11 @@ lands, ideally alongside Task 13:
   example app on it.
 - **#10 Profile-mismatch handling**: the mismatch is thrown *inside* the retry loop → a genuine
   wrong-profile device burns 3 connect cycles + 750 ms backoff and reports a misleading "after 3
-  attempts". Also the check only inspects the service UUID — `BleGattService.characteristicUuids`
-  is collected then never used, so a missing write/notify characteristic fails deep at the first
-  GATT write instead of at connect. And the `warning` log should name both mismatched UUIDs.
-  Fix: rethrow mismatch outside the loop; validate `writeCharUuid`/`notifyCharUuid` presence.
+  attempts". And the `warning` log should name both mismatched UUIDs. Fix: rethrow mismatch
+  outside the loop.
+  (PARTLY DONE in commit `91bc5bc`: characteristics are now discovered/validated by GATT
+  property at connect time — a missing write/notify characteristic now throws at connect, not
+  deep at the first GATT write. The retry-3× and log-wording parts remain.)
 - **#12** `DiveComputerFfi._connectBle`: wrap `dc_custom_open` in try/finally — leaks the
   `callbacks` struct + the one-pointer `iostream` cell on failure, and leaks the `iostream` cell
   even on success. Add a comment that freeing `callbacks` right after open is safe only because
