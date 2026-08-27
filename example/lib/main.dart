@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:dive_computer/dive_computer.dart';
-import 'package:universal_ble/universal_ble.dart';
+import 'package:dive_computer/types/ble_scan_result.dart';
 
 void main() {
   runApp(const MyApp());
@@ -115,13 +115,11 @@ class _MyAppState extends State<MyApp> {
   }
 }
 
-/// Tier 0 smoke test for `package:universal_ble` on this platform: raw
-/// scan/connect/discoverServices with no bridge code in between. Read-only —
-/// this must never write to a characteristic, since the test target is a
-/// real device we don't control the firmware of.
+/// Tier 2 manual test screen: drives the real `DiveComputer` BLE API end to
+/// end — scan (filtered to recognized devices), connect, download, disconnect.
 ///
-/// Kept in place beyond its initial manual-gate use: a later task extends
-/// this same screen.
+/// `openConnection()` is owned by `_MyAppState` for the whole app, so this
+/// screen just uses `DiveComputer.instance` directly.
 class BleDebugScreen extends StatefulWidget {
   const BleDebugScreen({super.key});
 
@@ -130,8 +128,10 @@ class BleDebugScreen extends StatefulWidget {
 }
 
 class _BleDebugScreenState extends State<BleDebugScreen> {
+  final dc = DiveComputer.instance;
   final List<String> _log = [];
-  final Map<String, BleDevice> _found = {};
+  final Map<String, BleScanResult> _found = {};
+  StreamSubscription<BleScanResult>? _scanSub;
 
   void _print(String line) {
     setState(() => _log.insert(0, line));
@@ -140,34 +140,41 @@ class _BleDebugScreenState extends State<BleDebugScreen> {
   }
 
   void _startScan() {
-    _found.clear();
-    UniversalBle.onScanResult = (device) {
-      if (_found.containsKey(device.deviceId)) return;
-      _found[device.deviceId] = device;
-      _print('Found: ${device.name ?? "(unnamed)"} [${device.deviceId}] '
-          'rssi=${device.rssi}');
-    };
-    UniversalBle.startScan();
+    _scanSub?.cancel();
+    setState(() => _found.clear());
     _print('Scan started');
+    _scanSub = dc.scanForBleDevices().listen(
+      (result) {
+        setState(() => _found[result.id] = result);
+        _print('Found: $result');
+      },
+      onError: (Object e) => _print('SCAN ERROR: $e'),
+    );
   }
 
-  Future<void> _connectAndInspect(BleDevice device) async {
+  Future<void> _connectAndDownload(BleScanResult device) async {
     try {
       _print('Connecting to ${device.name}...');
-      await device.connect();
-      _print('Connected. Discovering services (read-only)...');
-      final services = await device.discoverServices();
-      for (final service in services) {
-        _print('Service ${service.uuid}');
-        for (final characteristic in service.characteristics) {
-          _print('  Characteristic ${characteristic.uuid}');
-        }
-      }
-      await device.disconnect();
-      _print('Disconnected.');
+      await dc.connectBle(device);
+      _print('Connected. Downloading...');
+      final dives = await dc.download(
+        Computer(device.profile?.vendorHint ?? 'Unknown',
+            device.profile?.productHint ?? device.name),
+        ComputerTransport.ble,
+      );
+      _print('Downloaded ${dives.length} dives');
     } catch (e) {
       _print('ERROR: $e');
+    } finally {
+      await dc.disconnectBle();
+      _print('Disconnected.');
     }
+  }
+
+  @override
+  void dispose() {
+    _scanSub?.cancel();
+    super.dispose();
   }
 
   @override
@@ -176,16 +183,9 @@ class _BleDebugScreenState extends State<BleDebugScreen> {
       children: [
         Padding(
           padding: const EdgeInsets.all(8),
-          child: Row(
-            children: [
-              ElevatedButton(
-                  onPressed: _startScan, child: const Text('Start scan')),
-              const SizedBox(width: 8),
-              ElevatedButton(
-                onPressed: () => UniversalBle.stopScan(),
-                child: const Text('Stop scan'),
-              ),
-            ],
+          child: ElevatedButton(
+            onPressed: _startScan,
+            child: const Text('Scan for known BLE devices'),
           ),
         ),
         Expanded(
@@ -193,11 +193,11 @@ class _BleDebugScreenState extends State<BleDebugScreen> {
             children: [
               for (final device in _found.values)
                 ListTile(
-                  title: Text(device.name ?? '(unnamed)'),
-                  subtitle: Text(device.deviceId),
+                  title: Text(device.name.isEmpty ? '(unnamed)' : device.name),
+                  subtitle: Text('${device.id}  rssi=${device.rssi}'),
                   trailing: TextButton(
-                    onPressed: () => _connectAndInspect(device),
-                    child: const Text('Connect (read-only)'),
+                    onPressed: () => _connectAndDownload(device),
+                    child: const Text('Connect + download'),
                   ),
                 ),
               const Divider(),
