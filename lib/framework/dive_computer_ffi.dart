@@ -3,6 +3,8 @@ import 'dart:ffi' as ffi;
 import 'dart:io';
 import 'dart:developer' as developer;
 
+import 'package:dive_computer/framework/ble/ble_bridge_callbacks.dart';
+import 'package:dive_computer/framework/ble/ble_bridge_state.dart';
 import 'package:dive_computer/framework/utils/transports_bitmask.dart';
 import 'package:dive_computer/types/computer.dart';
 import 'package:dive_computer/types/dive.dart';
@@ -146,6 +148,7 @@ class DiveComputerFfi {
     Computer computer,
     ComputerTransport transport, [
     String? lastFingerprint,
+    int? bleBridgeAddress,
   ]) {
     final computerDescriptor = _computerDescriptorCache[computer]!;
 
@@ -153,6 +156,13 @@ class DiveComputerFfi {
     switch (transport) {
       case ComputerTransport.serial:
         iostream = _connectSerial(computerDescriptor);
+        break;
+      case ComputerTransport.ble:
+        if (bleBridgeAddress == null) {
+          throw ArgumentError(
+              'ComputerTransport.ble requires a bleBridgeAddress');
+        }
+        iostream = _connectBle(bleBridgeAddress);
         break;
       default:
         throw UnimplementedError();
@@ -200,6 +210,41 @@ class DiveComputerFfi {
         'iostream close',
       );
     }
+  }
+
+  static ffi.Pointer<dc_iostream_t> _connectBle(int bleBridgeAddress) {
+    final bridge = BleBridge.fromAddress(bleBridgeAddress);
+    final callbacks = calloc<dc_custom_cbs_t>();
+    callbacks.ref
+      ..set_timeout = BleBridgeCallbacks.setTimeoutPtr
+      ..set_break = BleBridgeCallbacks.setBreakPtr
+      ..set_dtr = BleBridgeCallbacks.setDtrPtr
+      ..set_rts = BleBridgeCallbacks.setRtsPtr
+      ..get_lines = BleBridgeCallbacks.getLinesPtr
+      ..get_available = BleBridgeCallbacks.getAvailablePtr
+      ..configure = BleBridgeCallbacks.configurePtr
+      ..poll = BleBridgeCallbacks.pollPtr
+      ..read = BleBridgeCallbacks.readPtr
+      ..write = BleBridgeCallbacks.writePtr
+      ..ioctl = BleBridgeCallbacks.ioctlPtr
+      ..flush = BleBridgeCallbacks.flushPtr
+      ..purge = BleBridgeCallbacks.purgePtr
+      ..sleep = BleBridgeCallbacks.sleepPtr
+      ..close = BleBridgeCallbacks.closePtr;
+
+    final iostream = calloc<ffi.Pointer<dc_iostream_t>>();
+    _handleResult(
+      _bindings.dc_custom_open(
+        iostream,
+        context.value,
+        dc_transport_t.DC_TRANSPORT_BLE,
+        callbacks,
+        bridge.pointer.cast(),
+      ),
+      'ble custom iostream open',
+    );
+    calloc.free(callbacks);
+    return iostream.value;
   }
 
   static ffi.Pointer<dc_iostream_t> _connectSerial(
