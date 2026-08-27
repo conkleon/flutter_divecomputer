@@ -5,10 +5,29 @@ import 'package:universal_ble/universal_ble.dart';
 import '../../types/ble_profile.dart';
 import '../../types/ble_scan_result.dart';
 
-class BleGattService {
-  BleGattService(this.uuid, this.characteristicUuids);
+/// One GATT characteristic within a [BleGattService], carrying just the
+/// properties [BleTransport] needs to pick the right write/notify pair when a
+/// [BleProfile] doesn't name explicit characteristic UUIDs.
+class BleGattCharacteristic {
+  const BleGattCharacteristic(
+    this.uuid, {
+    this.canWrite = false,
+    this.canWriteWithoutResponse = false,
+    this.canNotify = false,
+    this.canIndicate = false,
+  });
+
   final String uuid;
-  final List<String> characteristicUuids;
+  final bool canWrite;
+  final bool canWriteWithoutResponse;
+  final bool canNotify;
+  final bool canIndicate;
+}
+
+class BleGattService {
+  BleGattService(this.uuid, this.characteristics);
+  final String uuid;
+  final List<BleGattCharacteristic> characteristics;
 }
 
 abstract class BleConnection {
@@ -93,7 +112,20 @@ class _UniversalBleConnection implements BleConnection {
     final services = await _device.discoverServices();
     return [
       for (final s in services)
-        BleGattService(s.uuid, [for (final c in s.characteristics) c.uuid]),
+        BleGattService(s.uuid, [
+          for (final c in s.characteristics)
+            BleGattCharacteristic(
+              c.uuid,
+              canWrite:
+                  c.properties.contains(CharacteristicProperty.write),
+              canWriteWithoutResponse: c.properties
+                  .contains(CharacteristicProperty.writeWithoutResponse),
+              canNotify:
+                  c.properties.contains(CharacteristicProperty.notify),
+              canIndicate:
+                  c.properties.contains(CharacteristicProperty.indicate),
+            ),
+        ]),
     ];
   }
 

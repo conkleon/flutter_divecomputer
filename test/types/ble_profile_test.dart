@@ -40,8 +40,11 @@ void main() {
       final matched = BleProfiles.match('Mares Sirius');
       expect(matched, same(BleProfiles.maresBluelink));
       expect(matched!.serviceUuid, '544e326b-5b72-c6b0-1c46-41c1bc448118');
-      expect(matched.writeWithResponse, isFalse);
       expect(matched.vendorHint, 'Mares');
+      // Characteristics + write mode are left to property-based discovery.
+      expect(matched.writeCharUuid, isNull);
+      expect(matched.notifyCharUuid, isNull);
+      expect(matched.writeWithResponse, isNull);
     });
   });
 }

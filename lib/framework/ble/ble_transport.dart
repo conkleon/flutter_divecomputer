@@ -17,8 +17,15 @@ class BleTransport {
 
   final BleCentral _central;
   BleConnection? _connection;
-  BleProfile? _profile;
   BleBridge? _bridge;
+
+  // Resolved once in connect() from the profile + discovered GATT layout;
+  // non-null exactly while _connection is.
+  String? _serviceUuid;
+  String? _writeCharUuid;
+  String? _notifyCharUuid;
+  bool _writeWithResponse = false;
+
   Timer? _mailboxTimer;
   StreamSubscription<Uint8List>? _notifySub;
   StreamSubscription<bool>? _connStateSub;
@@ -46,16 +53,20 @@ class BleTransport {
         // half-open connection behind wedges the GATT stack on Windows.
         try {
           final services = await connection.discoverServices();
-          final hasService = services.any((s) =>
-              s.uuid.toLowerCase() ==
-              device.profile!.serviceUuid.toLowerCase());
-          if (!hasService) {
+          final service =
+              _firstServiceMatching(services, device.profile!.serviceUuid);
+          if (service == null) {
             throw StateError(
                 'Device ${device.name} does not expose expected service '
                 '${device.profile!.serviceUuid} (BleProfile mismatch)');
           }
+          final resolved =
+              _resolveCharacteristics(service, device.profile!);
           _connection = connection;
-          _profile = device.profile;
+          _serviceUuid = service.uuid;
+          _writeCharUuid = resolved.writeCharUuid;
+          _notifyCharUuid = resolved.notifyCharUuid;
+          _writeWithResponse = resolved.writeWithResponse;
           _connStateSub = connection.connectionState.listen((connected) {
             if (!connected) _handleDisconnect();
           });
@@ -82,14 +93,13 @@ class BleTransport {
   /// after [connect].
   void attachBridge(BleBridge bridge) {
     final connection = _connection;
-    final profile = _profile;
-    if (connection == null || profile == null) {
+    if (connection == null || _serviceUuid == null) {
       throw StateError('attachBridge() called before connect()');
     }
     _bridge = bridge;
     _lastServicedWriteSeq = 0;
     _notifySub = connection
-        .subscribeNotifications(profile.serviceUuid, profile.notifyCharUuid)
+        .subscribeNotifications(_serviceUuid!, _notifyCharUuid!)
         .listen((bytes) {
       // Read the FIELD, not the captured parameter: _teardown() nulls _bridge
       // and cancels this subscription unawaited, so an already-queued
@@ -114,18 +124,17 @@ class BleTransport {
     if (_writeInFlight) return;
     final bridge = _bridge;
     final connection = _connection;
-    final profile = _profile;
-    if (bridge == null || connection == null || profile == null) return;
+    if (bridge == null || connection == null || _serviceUuid == null) return;
     final seq = bridge.pendingWriteSeq;
     if (seq == _lastServicedWriteSeq) return;
     _lastServicedWriteSeq = seq;
     _writeInFlight = true;
     try {
       await connection.write(
-        profile.serviceUuid,
-        profile.writeCharUuid,
+        _serviceUuid!,
+        _writeCharUuid!,
         bridge.pendingOutbound,
-        withResponse: profile.writeWithResponse,
+        withResponse: _writeWithResponse,
       );
       bridge.ackOutbound(seq, dc_status_t.DC_STATUS_SUCCESS);
     } catch (e, st) {
@@ -156,7 +165,69 @@ class BleTransport {
     _connStateSub?.cancel();
     _connStateSub = null;
     _connection = null;
-    _profile = null;
+    _serviceUuid = null;
+    _writeCharUuid = null;
+    _notifyCharUuid = null;
+    _writeWithResponse = false;
     _bridge = null;
+  }
+
+  static BleGattService? _firstServiceMatching(
+      List<BleGattService> services, String serviceUuid) {
+    final want = serviceUuid.toLowerCase();
+    for (final s in services) {
+      if (s.uuid.toLowerCase() == want) return s;
+    }
+    return null;
+  }
+
+  /// Resolves the write/notify characteristic pair for [service]: an explicit
+  /// UUID in [profile] always wins; otherwise the first characteristic in the
+  /// service advertising `write`/`writeWithoutResponse` (resp.
+  /// `notify`/`indicate`) is used. `writeWithResponse` falls back to
+  /// preferring write-without-response when the resolved characteristic
+  /// offers it.
+  ({String writeCharUuid, String notifyCharUuid, bool writeWithResponse})
+      _resolveCharacteristics(BleGattService service, BleProfile profile) {
+    BleGattCharacteristic? firstWhere(
+        bool Function(BleGattCharacteristic) test) {
+      for (final c in service.characteristics) {
+        if (test(c)) return c;
+      }
+      return null;
+    }
+
+    final explicitWrite = profile.writeCharUuid;
+    final writeChar = explicitWrite != null
+        ? firstWhere((c) => c.uuid.toLowerCase() == explicitWrite.toLowerCase())
+        : firstWhere((c) => c.canWrite || c.canWriteWithoutResponse);
+    final writeCharUuid = explicitWrite ?? writeChar?.uuid;
+    if (writeCharUuid == null) {
+      throw StateError('Service ${service.uuid} exposes no writable '
+          'characteristic (BleProfile mismatch)');
+    }
+
+    final explicitNotify = profile.notifyCharUuid;
+    final notifyChar = explicitNotify != null
+        ? firstWhere(
+            (c) => c.uuid.toLowerCase() == explicitNotify.toLowerCase())
+        : firstWhere((c) => c.canNotify || c.canIndicate);
+    final notifyCharUuid = explicitNotify ?? notifyChar?.uuid;
+    if (notifyCharUuid == null) {
+      throw StateError('Service ${service.uuid} exposes no notify/indicate '
+          'characteristic (BleProfile mismatch)');
+    }
+
+    final writeWithResponse = profile.writeWithResponse ??
+        !(writeChar?.canWriteWithoutResponse ?? false);
+
+    _log.fine('Resolved BLE characteristics on ${service.uuid}: '
+        'write=$writeCharUuid (withResponse=$writeWithResponse), '
+        'notify=$notifyCharUuid');
+    return (
+      writeCharUuid: writeCharUuid,
+      notifyCharUuid: notifyCharUuid,
+      writeWithResponse: writeWithResponse,
+    );
   }
 }

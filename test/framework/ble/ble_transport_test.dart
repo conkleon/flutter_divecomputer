@@ -20,14 +20,33 @@ const _profile = BleProfile(
   writeWithResponse: false,
 );
 
-BleScanResult _device({String id = 'dev-1'}) =>
-    BleScanResult(id: id, name: 'Test Device', rssi: -50, profile: _profile);
+/// Profile with no explicit characteristic UUIDs — BleTransport must discover
+/// them by GATT property.
+const _discoveryProfile = BleProfile(
+  namePattern: 'Test',
+  serviceUuid: 'service-1',
+);
 
-FakeBleCentral _centralWithMatchingService(String deviceId) {
+BleScanResult _device({String id = 'dev-1', BleProfile profile = _profile}) =>
+    BleScanResult(id: id, name: 'Test Device', rssi: -50, profile: profile);
+
+BleGattService _service({
+  String uuid = 'service-1',
+  List<BleGattCharacteristic>? characteristics,
+}) =>
+    BleGattService(
+      uuid,
+      characteristics ??
+          const [
+            BleGattCharacteristic('write-1', canWrite: true),
+            BleGattCharacteristic('notify-1', canNotify: true),
+          ],
+    );
+
+FakeBleCentral _centralWithMatchingService(String deviceId,
+    {List<BleGattService>? services}) {
   final central = FakeBleCentral();
-  central.servicesForDevice[deviceId] = [
-    BleGattService('service-1', ['write-1', 'notify-1']),
-  ];
+  central.servicesForDevice[deviceId] = services ?? [_service()];
   return central;
 }
 
@@ -40,6 +59,116 @@ void main() {
     await transport.connect(device);
 
     expect(transport.isConnected, isTrue);
+  });
+
+  group('characteristic discovery by GATT property', () {
+    /// Connects with [_discoveryProfile] against a service built from [chars],
+    /// attaches a bridge, drives one outbound byte through, and returns the
+    /// fake connection so the test can inspect which characteristics were
+    /// actually used.
+    Future<FakeBleConnection> connectAndWrite(
+        List<BleGattCharacteristic> chars) async {
+      final device = _device(id: 'd', profile: _discoveryProfile);
+      final central = _centralWithMatchingService('d',
+          services: [_service(characteristics: chars)]);
+      final transport = BleTransport(central);
+      await transport.connect(device);
+
+      final bridge = BleBridge.allocate();
+      addTearDown(bridge.dispose);
+      transport.attachBridge(bridge);
+      addTearDown(transport.disconnect);
+
+      final data = calloc<ffi.Uint8>(1)..[0] = 7;
+      addTearDown(() => calloc.free(data));
+      final seq = bridge.queueOutbound(data, 1);
+      await _pollUntil(() => bridge.waitForWriteAck(seq, 0),
+          const Duration(milliseconds: 200));
+      return central.connections['d']!;
+    }
+
+    test('picks the write char by "write" and the notify char by "notify"',
+        () async {
+      final conn = await connectAndWrite(const [
+        BleGattCharacteristic('n', canNotify: true),
+        BleGattCharacteristic('w', canWrite: true),
+      ]);
+      expect(conn.writeCharUuids, ['w']);
+      expect(conn.subscribedNotifyCharUuid, 'n');
+    });
+
+    test('discovers a write-without-response char', () async {
+      final conn = await connectAndWrite(const [
+        BleGattCharacteristic('w', canWriteWithoutResponse: true),
+        BleGattCharacteristic('n', canNotify: true),
+      ]);
+      expect(conn.writeCharUuids, ['w']);
+    });
+
+    test('accepts "indicate" for the notify characteristic', () async {
+      final conn = await connectAndWrite(const [
+        BleGattCharacteristic('w', canWrite: true),
+        BleGattCharacteristic('n', canIndicate: true),
+      ]);
+      expect(conn.subscribedNotifyCharUuid, 'n');
+    });
+
+    test('throws (no retry) when the service has no writable characteristic',
+        () async {
+      final device = _device(profile: _discoveryProfile);
+      final central = _centralWithMatchingService(device.id, services: [
+        _service(characteristics: const [
+          BleGattCharacteristic('n', canNotify: true),
+        ]),
+      ]);
+      final transport = BleTransport(central);
+      await expectLater(() => transport.connect(device, maxAttempts: 1),
+          throwsA(isA<StateError>()));
+    });
+
+    test('throws when the service has no notify/indicate characteristic',
+        () async {
+      final device = _device(profile: _discoveryProfile);
+      final central = _centralWithMatchingService(device.id, services: [
+        _service(characteristics: const [
+          BleGattCharacteristic('w', canWrite: true),
+        ]),
+      ]);
+      final transport = BleTransport(central);
+      await expectLater(() => transport.connect(device, maxAttempts: 1),
+          throwsA(isA<StateError>()));
+    });
+
+    test('an explicit profile UUID wins over property discovery', () async {
+      const profile = BleProfile(
+        namePattern: 'Test',
+        serviceUuid: 'service-1',
+        writeCharUuid: 'explicit-w',
+        notifyCharUuid: 'explicit-n',
+        writeWithResponse: true,
+      );
+      final central = _centralWithMatchingService('d', services: [
+        _service(characteristics: const [
+          // Discovery would pick this generic writable char first.
+          BleGattCharacteristic('generic-w', canWrite: true),
+          BleGattCharacteristic('explicit-w', canWrite: true),
+          BleGattCharacteristic('explicit-n', canNotify: true),
+        ]),
+      ]);
+      final t = BleTransport(central);
+      await t.connect(_device(id: 'd', profile: profile));
+      final bridge = BleBridge.allocate();
+      addTearDown(bridge.dispose);
+      t.attachBridge(bridge);
+      addTearDown(t.disconnect);
+      final data = calloc<ffi.Uint8>(1)..[0] = 1;
+      addTearDown(() => calloc.free(data));
+      final seq = bridge.queueOutbound(data, 1);
+      await _pollUntil(() => bridge.waitForWriteAck(seq, 0),
+          const Duration(milliseconds: 200));
+      expect(central.connections['d']!.writeCharUuids, ['explicit-w']);
+      expect(central.connections['d']!.subscribedNotifyCharUuid, 'explicit-n');
+    });
   });
 
   test('connect() fails fast (no retry) when the expected service is missing',

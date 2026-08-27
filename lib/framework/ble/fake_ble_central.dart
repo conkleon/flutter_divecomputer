@@ -53,6 +53,14 @@ class FakeBleConnection implements BleConnection {
   final _connectionState = StreamController<bool>.broadcast();
   final _notifications = StreamController<Uint8List>.broadcast();
   final List<List<int>> writes = [];
+
+  /// Target characteristic UUID of each entry in [writes], same order.
+  final List<String> writeCharUuids = [];
+
+  /// The characteristic UUID passed to the most recent
+  /// [subscribeNotifications] call.
+  String? subscribedNotifyCharUuid;
+
   List<BleGattService> servicesToReturn = [];
 
   /// Artificial latency applied to [write], so tests can queue more outbound
@@ -86,6 +94,7 @@ class FakeBleConnection implements BleConnection {
   Future<void> write(String serviceUuid, String characteristicUuid,
       List<int> bytes, {required bool withResponse}) async {
     writes.add(bytes);
+    writeCharUuids.add(characteristicUuid);
     concurrentWrites++;
     if (concurrentWrites > maxConcurrentWrites) {
       maxConcurrentWrites = concurrentWrites;
@@ -99,8 +108,10 @@ class FakeBleConnection implements BleConnection {
 
   @override
   Stream<Uint8List> subscribeNotifications(
-          String serviceUuid, String characteristicUuid) =>
-      _notifications.stream;
+      String serviceUuid, String characteristicUuid) {
+    subscribedNotifyCharUuid = characteristicUuid;
+    return _notifications.stream;
+  }
 
   @override
   Future<void> disconnect() async {

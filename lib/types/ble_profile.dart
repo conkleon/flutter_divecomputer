@@ -5,9 +5,9 @@ class BleProfile {
   const BleProfile({
     required this.namePattern,
     required this.serviceUuid,
-    required this.writeCharUuid,
-    required this.notifyCharUuid,
-    required this.writeWithResponse,
+    this.writeCharUuid,
+    this.notifyCharUuid,
+    this.writeWithResponse,
     this.vendorHint,
     this.productHint,
   });
@@ -16,10 +16,22 @@ class BleProfile {
   /// name (see [matchesName]).
   final String namePattern;
 
+  /// The GATT service to talk to. Required — this is how a scanned device is
+  /// matched to its profile after connecting.
   final String serviceUuid;
-  final String writeCharUuid;
-  final String notifyCharUuid;
-  final bool writeWithResponse;
+
+  /// Explicit write/notify characteristic UUIDs. When `null`, [BleTransport]
+  /// discovers them within [serviceUuid] by GATT property: the first
+  /// characteristic advertising `write`/`writeWithoutResponse` is the write
+  /// characteristic, the first advertising `notify`/`indicate` is the notify
+  /// characteristic. An explicit value always wins over discovery.
+  final String? writeCharUuid;
+  final String? notifyCharUuid;
+
+  /// Whether GATT writes use write-with-response. When `null`, inferred from
+  /// the resolved write characteristic: write-without-response is preferred
+  /// when the characteristic offers it.
+  final bool? writeWithResponse;
 
   /// Best-guess [Computer] vendor/product this profile corresponds to.
   /// Informational only — not used to select a libdivecomputer descriptor.
@@ -49,16 +61,13 @@ class BleProfiles {
   /// 0x2F / 0x33), plus Quad / Quad Ci / Quad 2, Genius, Smart Air,
   /// Puck Pro+ / Puck 4, and others.
   ///
-  /// GATT layout (a.k.a. the "Mares BlueLink Pro" service — native-BLE
-  /// models like the Sirius expose the same service):
-  ///   service : 544e326b-5b72-c6b0-1c46-41c1bc448118
-  ///   write   : 99a91ebd-b21f-1689-bb43-681f1f55e966  (write-without-response)
-  ///   notify  : 1d1aae28-d2a8-91a1-1242-9d2973fbe571  (notify)
-  /// Source: Subsurface `core/qt-ble.cpp` (service) + Mares Icon HD BLE
-  /// protocol write-ups (characteristics). Subsurface itself picks the
-  /// characteristics by GATT property rather than by fixed UUID, so if a
-  /// future Mares model differs, discover the real UUIDs with a BLE
-  /// inspector (nRF Connect) and add a second entry.
+  /// Service UUID is the "Mares BlueLink Pro" service (Subsurface
+  /// `core/qt-ble.cpp`); native-BLE models like the Sirius expose the same
+  /// one. The write/notify characteristics are left to property-based
+  /// discovery (as Subsurface does for Mares) — for reference, a Mares
+  /// BlueLink service typically exposes:
+  ///   write  : 99a91ebd-b21f-1689-bb43-681f1f55e966  (write-without-response)
+  ///   notify : 1d1aae28-d2a8-91a1-1242-9d2973fbe571  (notify)
   ///
   /// `namePattern` is a best guess — confirm the Sirius's actual advertised
   /// name during a scan and widen/narrow this if needed. `productHint`
@@ -67,9 +76,6 @@ class BleProfiles {
   static const maresBluelink = BleProfile(
     namePattern: 'Sirius',
     serviceUuid: '544e326b-5b72-c6b0-1c46-41c1bc448118',
-    writeCharUuid: '99a91ebd-b21f-1689-bb43-681f1f55e966',
-    notifyCharUuid: '1d1aae28-d2a8-91a1-1242-9d2973fbe571',
-    writeWithResponse: false,
     vendorHint: 'Mares',
     productHint: 'Sirius',
   );
