@@ -38,6 +38,9 @@ class UniversalBleCentral implements BleCentral {
   Stream<BleScanResult> scan() {
     final controller = StreamController<BleScanResult>();
     UniversalBle.onScanResult = (device) {
+      // Results can still arrive after the stream was cancelled/closed;
+      // add()ing to a closed controller throws StateError.
+      if (controller.isClosed) return;
       _seen[device.deviceId] = device;
       final profile = BleProfiles.match(device.name ?? '');
       if (profile == null) return; // only surface recognized devices
@@ -49,7 +52,13 @@ class UniversalBleCentral implements BleCentral {
       ));
     };
     UniversalBle.startScan();
-    controller.onCancel = () => UniversalBle.stopScan();
+    controller.onCancel = () async {
+      // onScanResult is a global static — clear it so a stale handler cannot
+      // outlive this scan (or clobber a subsequent one).
+      UniversalBle.onScanResult = null;
+      _seen.clear();
+      await UniversalBle.stopScan();
+    };
     return controller.stream;
   }
 

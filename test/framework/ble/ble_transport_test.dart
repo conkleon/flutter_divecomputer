@@ -94,6 +94,59 @@ void main() {
     expect(bridge.writeStatus, dc_status_t.DC_STATUS_SUCCESS);
   });
 
+  test(
+      'a retry queued mid-flight does not start a concurrent write '
+      'nor ack the wrong sequence', () async {
+    final device = _device();
+    final central = _centralWithMatchingService(device.id);
+    final transport = BleTransport(central);
+    await transport.connect(device);
+    final connection = central.connections[device.id]!;
+    connection.writeDelay = const Duration(milliseconds: 60);
+
+    final bridge = BleBridge.allocate();
+    addTearDown(bridge.dispose);
+    transport.attachBridge(bridge);
+    addTearDown(transport.disconnect);
+
+    final data = calloc<ffi.Uint8>(1);
+    addTearDown(() => calloc.free(data));
+
+    // seq 1, payload [1]
+    data[0] = 1;
+    final seq1 = bridge.queueOutbound(data, 1);
+
+    // Watchdog: an ack for seq 2 must never appear before payload 2 was
+    // actually handed to the connection.
+    var prematureAck = false;
+    final watchdog = Timer.periodic(const Duration(milliseconds: 2), (_) {
+      if (bridge.waitForWriteAck(seq1 + 1, 0) && connection.writes.length < 2) {
+        prematureAck = true;
+      }
+    });
+    addTearDown(watchdog.cancel);
+
+    // Let the mailbox timer pick up seq 1 and start the (slow) write.
+    await _pollUntil(
+        () => connection.writes.isNotEmpty, const Duration(milliseconds: 200));
+
+    // libdivecomputer times out and retries while the write is in flight.
+    data[0] = 2;
+    final seq2 = bridge.queueOutbound(data, 1);
+
+    final acked = await _pollUntil(
+        () => bridge.waitForWriteAck(seq2, 0), const Duration(seconds: 2));
+
+    expect(acked, isTrue);
+    expect(prematureAck, isFalse);
+    expect(connection.maxConcurrentWrites, 1);
+    expect(connection.writes, [
+      [1],
+      [2]
+    ]);
+    expect(bridge.writeStatus, dc_status_t.DC_STATUS_SUCCESS);
+  });
+
   test('notifications from the connection land in the bridge', () async {
     final device = _device();
     final central = _centralWithMatchingService(device.id);
@@ -110,6 +163,48 @@ void main() {
     await Future.delayed(Duration.zero);
 
     expect(bridge.inboundAvailable, 2);
+  });
+
+  test('a notification delivered during teardown is dropped, not pushed',
+      () async {
+    final device = _device();
+    final central = _centralWithMatchingService(device.id);
+    final transport = BleTransport(central);
+    await transport.connect(device);
+
+    final bridge = BleBridge.allocate();
+    addTearDown(bridge.dispose);
+    transport.attachBridge(bridge);
+
+    // Queue a notification, then tear down before the broadcast stream
+    // delivers it — the listener must observe the closed/detached bridge
+    // instead of writing into freed memory.
+    central.connections[device.id]!
+        .emitNotification(Uint8List.fromList([9, 9]));
+    await transport.disconnect();
+    await Future.delayed(Duration.zero);
+
+    expect(bridge.inboundAvailable, 0);
+  });
+
+  test('connect() disconnects the GATT link when discoverServices() throws',
+      () async {
+    final device = _device();
+    final central = _centralWithMatchingService(device.id);
+    central.failDiscoverServices = true;
+    final transport = BleTransport(central);
+
+    await expectLater(
+      () => transport.connect(device, maxAttempts: 2),
+      throwsA(isA<StateError>()),
+    );
+
+    expect(transport.isConnected, isFalse);
+    expect(central.connectCallCount, 2);
+    // Every attempt must have closed its half-open GATT link before the next
+    // one opened a new connection (Windows wedges otherwise).
+    expect(central.connections[device.id]!.disconnectCallCount, 1,
+        reason: 'the last attempt\'s connection must have been disconnected');
   });
 
   test('a real disconnect closes the bridge and tears down the timer',

@@ -2,7 +2,6 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:dive_computer/dive_computer.dart';
-import 'package:dive_computer/types/ble_scan_result.dart';
 
 void main() {
   runApp(const MyApp());

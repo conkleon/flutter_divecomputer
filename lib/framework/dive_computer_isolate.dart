@@ -64,7 +64,11 @@ class DiveComputer implements DiveComputerInterface {
       } else if (message is List<Dive>) {
         _downloadedDives?.complete(message);
       } else if (message is _BleBridgeReleased) {
-        _bleBridgeReleased?.complete();
+        // Guarded: complete() on an already-completed completer throws inside
+        // this listener and would wedge the singleton's port handler.
+        if (_bleBridgeReleased?.isCompleted == false) {
+          _bleBridgeReleased?.complete();
+        }
       } else if (message is Error || message is Exception) {
         if (_supportedComputers?.isCompleted == false) {
           _supportedComputers?.completeError(message);
@@ -95,6 +99,11 @@ class DiveComputer implements DiveComputerInterface {
 
   @override
   void enableDebugLogging() async {
+    // One switch controls both isolates: BleTransport lives here on the main
+    // isolate, so the background-isolate message alone can never enable it.
+    hierarchicalLoggingEnabled = true;
+    forwardLoggerToDeveloperLog(bleTransportLog);
+    bleTransportLog.level = Level.FINEST;
     _send((DiveComputerMethod.enableDebugLogging, []));
   }
 
@@ -121,20 +130,34 @@ class DiveComputer implements DiveComputerInterface {
     String? lastFingerprint,
   ]) async {
     BleBridge? bridge;
-    if (transport == ComputerTransport.ble) {
-      if (!_bleTransport.isConnected) {
-        throw StateError(
-            'download() with ComputerTransport.ble requires connectBle() '
-            'to have succeeded first');
+    // Allocate/attach/send are grouped so that any failure before the send is
+    // confirmed disposes the bridge and rethrows WITHOUT entering the
+    // await-released path below: the background isolate never received the
+    // bridge, so _BleBridgeReleased would never arrive and download() would
+    // hang forever.
+    try {
+      if (transport == ComputerTransport.ble) {
+        if (!_bleTransport.isConnected) {
+          throw StateError(
+              'download() with ComputerTransport.ble requires connectBle() '
+              'to have succeeded first');
+        }
+        bridge = BleBridge.allocate();
+        _bleTransport.attachBridge(bridge);
+        _bleBridgeReleased = Completer<void>();
       }
-      bridge = BleBridge.allocate();
-      _bleTransport.attachBridge(bridge);
-      _bleBridgeReleased = Completer<void>();
+      await _send((
+        DiveComputerMethod.download,
+        [computer, transport, lastFingerprint, bridge?.address],
+      ));
+    } catch (_) {
+      if (bridge != null) {
+        bridge.dispose();
+        bridge = null;
+      }
+      _bleBridgeReleased = null;
+      rethrow;
     }
-    await _send((
-      DiveComputerMethod.download,
-      [computer, transport, lastFingerprint, bridge?.address],
-    ));
     try {
       return await (_downloadedDives = Completer()).future;
     } finally {

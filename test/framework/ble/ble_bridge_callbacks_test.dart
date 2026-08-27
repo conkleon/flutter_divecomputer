@@ -91,7 +91,7 @@ void main() {
     final ackFuture = Isolate.run(() async {
       await Future.delayed(const Duration(milliseconds: 30));
       BleBridge.fromAddress(bridge.address)
-          .ackOutbound(dc_status_t.DC_STATUS_SUCCESS);
+          .ackOutbound(1, dc_status_t.DC_STATUS_SUCCESS);
     });
 
     final write = BleBridgeCallbacks.writePtr.asFunction<_ReadWriteDart>();

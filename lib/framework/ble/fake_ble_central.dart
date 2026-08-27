@@ -18,6 +18,9 @@ class FakeBleCentral implements BleCentral {
   int connectCallCount = 0;
   bool failNextConnect = false;
 
+  /// Applied to every [FakeBleConnection] this central hands out.
+  bool failDiscoverServices = false;
+
   void emitScanResult(BleScanResult result) => _scanController.add(result);
 
   @override
@@ -34,7 +37,8 @@ class FakeBleCentral implements BleCentral {
       throw Exception('simulated connect failure');
     }
     final connection = FakeBleConnection(device.id)
-      ..servicesToReturn = servicesForDevice[device.id] ?? [];
+      ..servicesToReturn = servicesForDevice[device.id] ?? []
+      ..failDiscoverServices = failDiscoverServices;
     connections[device.id] = connection;
     return connection;
   }
@@ -51,19 +55,46 @@ class FakeBleConnection implements BleConnection {
   final List<List<int>> writes = [];
   List<BleGattService> servicesToReturn = [];
 
+  /// Artificial latency applied to [write], so tests can queue more outbound
+  /// data while a write is still in flight.
+  Duration writeDelay = Duration.zero;
+
+  /// Number of [write] calls that have started but not yet completed. A value
+  /// greater than 1 means the transport issued concurrent GATT writes.
+  int concurrentWrites = 0;
+  int maxConcurrentWrites = 0;
+
   void emitNotification(Uint8List bytes) => _notifications.add(bytes);
   void simulateDisconnect() => _connectionState.add(false);
 
   @override
   Stream<bool> get connectionState => _connectionState.stream;
 
+  /// When true, [discoverServices] throws instead of returning.
+  bool failDiscoverServices = false;
+  int disconnectCallCount = 0;
+
   @override
-  Future<List<BleGattService>> discoverServices() async => servicesToReturn;
+  Future<List<BleGattService>> discoverServices() async {
+    if (failDiscoverServices) {
+      throw Exception('simulated discoverServices failure');
+    }
+    return servicesToReturn;
+  }
 
   @override
   Future<void> write(String serviceUuid, String characteristicUuid,
       List<int> bytes, {required bool withResponse}) async {
     writes.add(bytes);
+    concurrentWrites++;
+    if (concurrentWrites > maxConcurrentWrites) {
+      maxConcurrentWrites = concurrentWrites;
+    }
+    try {
+      if (writeDelay > Duration.zero) await Future.delayed(writeDelay);
+    } finally {
+      concurrentWrites--;
+    }
   }
 
   @override
@@ -73,6 +104,7 @@ class FakeBleConnection implements BleConnection {
 
   @override
   Future<void> disconnect() async {
+    disconnectCallCount++;
     _connectionState.add(false);
   }
 }

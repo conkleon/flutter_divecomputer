@@ -16,6 +16,32 @@ import 'dive_computer_ffi_bindings_generated.dart';
 
 final log = logging.Logger('DiveComputerFfi');
 
+/// Logger used by the BLE bridge callbacks on the background isolate.
+final bleBridgeLog = logging.Logger('BleBridge');
+
+/// Logger used by [BleTransport] on the main isolate.
+final bleTransportLog = logging.Logger('BleTransport');
+
+final _forwardedLoggers = <String>{};
+
+/// Pipes [logger]'s records to `dart:developer`'s `log()` so they show up in
+/// the Flutter/DevTools console. Idempotent per isolate.
+void forwardLoggerToDeveloperLog(logging.Logger logger) {
+  if (!_forwardedLoggers.add(logger.fullName)) return;
+  logger.onRecord.listen((e) {
+    developer.log(
+      e.message,
+      time: e.time,
+      sequenceNumber: e.sequenceNumber,
+      level: e.level.value,
+      name: e.loggerName,
+      zone: e.zone,
+      error: e.error,
+      stackTrace: e.stackTrace,
+    );
+  });
+}
+
 /// Foreign function interface for libdivecomputer.
 ///
 /// Warning: This class performs blocking operations and should only be used in
@@ -23,18 +49,10 @@ final log = logging.Logger('DiveComputerFfi');
 class DiveComputerFfi {
   static void initialize() {
     logging.hierarchicalLoggingEnabled = true;
-    log.onRecord.listen((e) {
-      developer.log(
-        e.message,
-        time: e.time,
-        sequenceNumber: e.sequenceNumber,
-        level: e.level.value,
-        name: e.loggerName,
-        zone: e.zone,
-        error: e.error,
-        stackTrace: e.stackTrace,
-      );
-    });
+    forwardLoggerToDeveloperLog(log);
+    // BleBridge runs on this (background) isolate; without its own forwarder
+    // its records go to a root logger nobody subscribes to.
+    forwardLoggerToDeveloperLog(bleBridgeLog);
 
     String fileName;
     if (Platform.isWindows) {
@@ -64,8 +82,11 @@ class DiveComputerFfi {
 
   static Function(List<Dive>)? divesCallback;
 
+  /// One switch for every logger owned by this isolate — the FFI layer and
+  /// the BLE bridge callbacks.
   static void enableDebugLogging([logging.Level level = logging.Level.INFO]) {
     log.level = level;
+    bleBridgeLog.level = level;
   }
 
   static void openConnection() {

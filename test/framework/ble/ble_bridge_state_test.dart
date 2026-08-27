@@ -59,9 +59,25 @@ void main() {
       expect(bridge.pendingOutbound, [9, 8, 7]);
       expect(bridge.pendingWriteSeq, seq);
 
-      bridge.ackOutbound(0);
+      bridge.ackOutbound(seq, 0);
       expect(bridge.waitForWriteAck(seq, 100), isTrue);
       expect(bridge.writeStatus, 0);
+    });
+
+    test('ackOutbound acks the seq it was given, not the current writeSeq', () {
+      final data = calloc<ffi.Uint8>(1);
+      addTearDown(() => calloc.free(data));
+
+      final seq1 = bridge.queueOutbound(data, 1);
+      // Simulates libdivecomputer retrying while the GATT write for seq1 is
+      // still in flight on the main isolate.
+      final seq2 = bridge.queueOutbound(data, 1);
+      expect(seq2, seq1 + 1);
+
+      bridge.ackOutbound(seq1, 0);
+      expect(bridge.waitForWriteAck(seq1, 0), isTrue);
+      expect(bridge.waitForWriteAck(seq2, 0), isFalse,
+          reason: 'seq2 was never written, so it must not read as acked');
     });
   });
 

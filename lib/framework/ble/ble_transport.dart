@@ -23,6 +23,7 @@ class BleTransport {
   StreamSubscription<Uint8List>? _notifySub;
   StreamSubscription<bool>? _connStateSub;
   int _lastServicedWriteSeq = 0;
+  bool _writeInFlight = false;
 
   bool get isConnected => _connection != null;
 
@@ -40,20 +41,28 @@ class BleTransport {
     for (var attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         final connection = await _central.connect(device);
-        final services = await connection.discoverServices();
-        final hasService = services.any((s) =>
-            s.uuid.toLowerCase() == device.profile!.serviceUuid.toLowerCase());
-        if (!hasService) {
-          await connection.disconnect();
-          throw StateError(
-              'Device ${device.name} does not expose expected service '
-              '${device.profile!.serviceUuid} (BleProfile mismatch)');
+        // Once we hold a live GATT connection, EVERY failure path below must
+        // close it before the outer retry loop opens a new one — leaving a
+        // half-open connection behind wedges the GATT stack on Windows.
+        try {
+          final services = await connection.discoverServices();
+          final hasService = services.any((s) =>
+              s.uuid.toLowerCase() ==
+              device.profile!.serviceUuid.toLowerCase());
+          if (!hasService) {
+            throw StateError(
+                'Device ${device.name} does not expose expected service '
+                '${device.profile!.serviceUuid} (BleProfile mismatch)');
+          }
+          _connection = connection;
+          _profile = device.profile;
+          _connStateSub = connection.connectionState.listen((connected) {
+            if (!connected) _handleDisconnect();
+          });
+        } catch (_) {
+          await connection.disconnect().catchError((_) {});
+          rethrow;
         }
-        _connection = connection;
-        _profile = device.profile;
-        _connStateSub = connection.connectionState.listen((connected) {
-          if (!connected) _handleDisconnect();
-        });
         _log.fine('Connected to ${device.name} (${device.id})');
         return;
       } catch (e) {
@@ -82,7 +91,13 @@ class BleTransport {
     _notifySub = connection
         .subscribeNotifications(profile.serviceUuid, profile.notifyCharUuid)
         .listen((bytes) {
-      final written = bridge.pushInbound(bytes);
+      // Read the FIELD, not the captured parameter: _teardown() nulls _bridge
+      // and cancels this subscription unawaited, so an already-queued
+      // notification can still arrive after the bridge's native memory was
+      // freed. Matches _serviceMailbox().
+      final b = _bridge;
+      if (b == null || b.isClosed) return;
+      final written = b.pushInbound(bytes);
       if (written < bytes.length) {
         _log.severe('Inbound ring buffer overflow: dropped '
             '${bytes.length - written} of ${bytes.length} bytes');
@@ -93,6 +108,10 @@ class BleTransport {
   }
 
   Future<void> _serviceMailbox() async {
+    // The 4ms timer keeps firing while an await is outstanding; without this
+    // guard a retry that bumps writeSeq mid-flight would start a second
+    // concurrent GATT write on the same characteristic.
+    if (_writeInFlight) return;
     final bridge = _bridge;
     final connection = _connection;
     final profile = _profile;
@@ -100,6 +119,7 @@ class BleTransport {
     final seq = bridge.pendingWriteSeq;
     if (seq == _lastServicedWriteSeq) return;
     _lastServicedWriteSeq = seq;
+    _writeInFlight = true;
     try {
       await connection.write(
         profile.serviceUuid,
@@ -107,10 +127,12 @@ class BleTransport {
         bridge.pendingOutbound,
         withResponse: profile.writeWithResponse,
       );
-      bridge.ackOutbound(dc_status_t.DC_STATUS_SUCCESS);
+      bridge.ackOutbound(seq, dc_status_t.DC_STATUS_SUCCESS);
     } catch (e, st) {
       _log.severe('Mailbox write failed', e, st);
-      bridge.ackOutbound(dc_status_t.DC_STATUS_IO);
+      bridge.ackOutbound(seq, dc_status_t.DC_STATUS_IO);
+    } finally {
+      _writeInFlight = false;
     }
   }
 

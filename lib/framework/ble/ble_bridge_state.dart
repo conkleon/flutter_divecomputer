@@ -173,12 +173,18 @@ class BleBridge {
     return seq;
   }
 
-  /// Called by the main isolate once the real GATT write for the current
-  /// mailbox contents has completed (or failed — pass the resulting
+  /// Called by the main isolate once the real GATT write for the mailbox
+  /// contents of sequence [seq] has completed (or failed — pass the resulting
   /// dc_status_t either way).
-  void ackOutbound(int status) {
+  ///
+  /// [seq] MUST be the sequence number that was actually written, captured
+  /// before the GATT write started — NOT the current [pendingWriteSeq]. A
+  /// retry from libdivecomputer can bump `writeSeq` while a write is still in
+  /// flight; acking the current value would tell the background isolate that
+  /// a payload it never sent had been delivered.
+  void ackOutbound(int seq, int status) {
     pointer.ref.writeStatus = status;
-    pointer.ref.writeAckSeq = pointer.ref.writeSeq;
+    pointer.ref.writeAckSeq = seq;
   }
 
   bool waitForWriteAck(int seq, int timeoutMs) {
