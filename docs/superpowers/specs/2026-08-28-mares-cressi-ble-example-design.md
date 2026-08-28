@@ -231,10 +231,11 @@ No change to the "Serial computers" tab.
   - `BLUETOOTH_CONNECT`,
   - `ACCESS_FINE_LOCATION` (needed for scans on API < 31),
   - legacy `BLUETOOTH` / `BLUETOOTH_ADMIN` with `android:maxSdkVersion="30"`.
-- Runtime request before the first scan. Add `permission_handler` to
-  `example/pubspec.yaml` (example-only dep) and request
-  `bluetoothScan` + `bluetoothConnect` (+ `locationWhenInUse` on older APIs);
-  if denied, the scan button shows a message and does nothing.
+- Runtime request: `universal_ble` (already a dependency) requests the
+  Android BLE permissions itself during `startScan`, so no `permission_handler`
+  dep is needed. The example optionally calls `UniversalBle.requestPermissions()`
+  at the top of its scan handler for an explicit pre-flight and a clean
+  "permission denied" message.
 - `minSdkVersion`: confirm the example's is ≥ 21 (universal_ble's floor);
   bump in `example/android/app/build.gradle` only if it's lower.
 - Windows: no changes (capabilities already work per the Tier 0 gate).
@@ -265,8 +266,8 @@ No change to the "Serial computers" tab.
 - Descriptor choice for BlueLink-dongle Mares models and non-Goa Cressi models may
   need the dropdown override; the `mares_iconhd`/`cressi_goa` backends may or may not
   self-correct a mismatched model.
-- `permission_handler` version pin needs to resolve against the example's Flutter/Dart
-  SDK (same constraint dance the `universal_ble` pin went through — SDK 3.8.1 here).
+- Whether the resolved `universal_ble` version exposes `requestPermissions()` — if
+  not, the pre-flight step is skipped and `startScan` still requests permissions.
 - Whether `cressi_goa` / `mares_iconhd` descriptors in this 0.9.0-devel build actually
   advertise `DC_TRANSPORT_BLE` in their transport bitmask — if not, `candidatesFor`'s
   fallback-to-all-same-vendor branch is what carries the flow.
@@ -279,7 +280,6 @@ No change to the "Serial computers" tab.
 | `lib/framework/dive_computer_ffi.dart` | delete the `kDebugMode` 5-dive cap |
 | `example/lib/main.dart` | BLE screen: dive list, console dump, descriptor dropdown, `mounted` guards |
 | `example/lib/ble_computer_picker.dart` | new — descriptor resolution helpers (or inline) |
-| `example/pubspec.yaml` | add `permission_handler` (example-only) |
 | `example/android/app/src/main/AndroidManifest.xml` | BLE permissions |
 | `example/android/app/build.gradle` | `minSdkVersion` bump only if < 21 |
 | `test/types/ble_profile_test.dart` | rewrite for new matching + registry |
