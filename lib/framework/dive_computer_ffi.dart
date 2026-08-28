@@ -9,7 +9,6 @@ import 'package:dive_computer/framework/utils/transports_bitmask.dart';
 import 'package:dive_computer/types/computer.dart';
 import 'package:dive_computer/types/dive.dart';
 import 'package:ffi/ffi.dart';
-import 'package:flutter/foundation.dart';
 import 'package:logging/logging.dart' as logging;
 
 import 'dive_computer_ffi_bindings_generated.dart';
@@ -339,7 +338,6 @@ class DiveComputerFfi {
 
     // non-zero to continue
     if (currentFingerprint == lastFingerprint) return 0;
-    if (kDebugMode && _divesCache.length >= 5) return 0;
     return 1;
   }
 

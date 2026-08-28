@@ -7,6 +7,8 @@
 * BLE: recognise Mares (BlueLink Pro dongle / Genius) and Cressi (Goa
   family) dive computers during a scan. GATT service UUIDs and advertised
   name patterns are derived from Subsurface and not yet hardware-verified.
+* `download()` now returns the dive computer's complete log in all build
+  modes. Debug builds previously stopped after 5 dives.
 
 ## 0.0.1
 
