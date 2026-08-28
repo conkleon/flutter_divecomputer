@@ -85,14 +85,19 @@ List<String> describeDiveVerbose(Dive dive) {
     if (s.setpoint != null) parts.add('setpoint=${s.setpoint}');
     if (s.cns != null) parts.add('cns=${s.cns}');
     if (s.ppo2 != null) parts.add('ppo2=${s.ppo2!.value}');
+    if (s.vendor != null) {
+      parts.add('vendor(type=${s.vendor!.type},size=${s.vendor!.size})');
+    }
     if (s.deco != null) {
-      parts.add('deco(type=${s.deco!.type},depth=${s.deco!.depth},tts=${s.deco!.tts})');
+      parts.add('deco(type=${s.deco!.type},time=${s.deco!.time},'
+          'depth=${s.deco!.depth},tts=${s.deco!.tts})');
     }
     for (final p in s.pressure ?? const []) {
       parts.add('pressure(tank=${p.tank},bar=${p.pressure})');
     }
     for (final e in s.events ?? const []) {
-      parts.add('event(type=${e.type},flags=${e.flags},value=${e.value})');
+      parts.add('event(type=${e.type},time=${e.time},'
+          'flags=${e.flags},value=${e.value})');
     }
     lines.add('  sample ${parts.join(' ')}');
   }

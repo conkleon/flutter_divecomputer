@@ -71,6 +71,19 @@ void main() {
       expect(s, contains('2:05')); // 125 s
       expect(s, contains('18.4'));
     });
+
+    test('renders — for null date, duration and max depth', () {
+      final dive = Dive('AABB',
+          diveTime: null, maxDepth: null, avgDepth: null, atmospheric: null,
+          temperatureSurface: null, temperatureMinimum: null,
+          temperatureMaximum: null, diveMode: null, dateTime: null,
+          salinity: null, gasmixes: null, tanks: null, samples: const []);
+      final s = formatDiveSummary(dive);
+      expect(s, contains('—'));
+      expect(s, contains('max —'));
+      expect(s, contains('gas 0'));
+      expect(s, contains('0 samples'));
+    });
   });
 
   group('describeDiveVerbose', () {
@@ -85,6 +98,29 @@ void main() {
       final lines = describeDiveVerbose(dive);
       expect(lines.first, contains('AABB'));
       expect(lines.where((l) => l.contains('sample t=')).length, 2);
+      // null Dive field renders a dash line
+      expect(lines, contains('  salinity    —'));
+    });
+
+    test('dumps vendor, deco time and event time on a sample', () {
+      final dive = Dive('CCDD',
+          diveTime: 30, maxDepth: 4.0, avgDepth: 2.0, atmospheric: 1.0,
+          temperatureSurface: null, temperatureMinimum: null,
+          temperatureMaximum: null, diveMode: null,
+          dateTime: DateTime(2026, 3, 3),
+          salinity: null, gasmixes: null, tanks: null,
+          samples: [
+            Sample(5)
+              ..depth = 4.0
+              ..vendor = Vendor(7, 12)
+              ..deco = Deco(1, 90, 3.0, 120)
+              ..events = [Event(2, 15, 4, 8)]
+          ]);
+      final lines = describeDiveVerbose(dive);
+      final sampleLine = lines.firstWhere((l) => l.contains('sample t='));
+      expect(sampleLine, contains('vendor(type=7,size=12)'));
+      expect(sampleLine, contains('deco(type=1,time=90,depth=3.0,tts=120)'));
+      expect(sampleLine, contains('event(type=2,time=15,flags=4,value=8)'));
     });
   });
 }
