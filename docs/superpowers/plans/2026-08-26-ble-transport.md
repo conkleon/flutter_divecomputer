@@ -2417,6 +2417,7 @@ lands, ideally alongside Task 13:
   (PARTLY DONE in commit `91bc5bc`: characteristics are now discovered/validated by GATT
   property at connect time — a missing write/notify characteristic now throws at connect, not
   deep at the first GATT write. The retry-3× and log-wording parts remain.)
+  NOTE (2026-08-28): a matched-but-wrong-model device is now recoverable via the example app's descriptor dropdown (Task 5), but the `BleTransport` retry-3x and log-wording parts remain open.
 - **#12** `DiveComputerFfi._connectBle`: wrap `dc_custom_open` in try/finally — leaks the
   `callbacks` struct + the one-pointer `iostream` cell on failure, and leaks the `iostream` cell
   even on success. Add a comment that freeing `callbacks` right after open is safe only because
@@ -2428,7 +2429,7 @@ lands, ideally alongside Task 13:
 - **#15** `_handleDisconnect` logs `warning('disconnected unexpectedly')` on *intentional*
   `disconnect()` too (the state stream emits `false`). Distinguish intentional teardown.
 - **#17** `example/lib/main.dart`: `setState` after `await` with no `mounted` guard; `await
-  dc.disconnectBle()` in a `finally` can mask the original error.
+  dc.disconnectBle()` in a `finally` can mask the original error. **DONE** — commits 2829188 + 77cfa4f (Task 5 of the 2026-08-28 Mares/Cressi plan): every `_print`/`setState` after an await is now `mounted`-guarded, and the `finally` disconnect is wrapped so it can't mask the download error.
 - **#18** `FakeBleConnection` stream controllers never closed; `const`-vs-`final` lint in
   `ble_scan_result_test.dart:14/16` and `ble_bridge_callbacks_test.dart:119`; add `.gitattributes`
   with `*.dart text eol=lf` to silence the Windows LF↔CRLF churn.
@@ -2437,7 +2438,7 @@ lands, ideally alongside Task 13:
 - **#20** `BleProfiles.known` is empty (intentional, per Task 4) so runtime scanning surfaces
   nothing — the example app's "Scan for known BLE devices" always shows zero results until a
   profile is added. Add a one-line note in the example screen so the Task 13 tester doesn't chase
-  a phantom bug.
+  a phantom bug. **DONE** — `known` now holds the Mares BlueLink and Cressi Goa profiles (Task 2 of the 2026-08-28 plan), so the example scan surfaces real devices.
 - **Inspection-only verification** (no automated test was feasible — spawned isolate + real
   libdivecomputer, or `UniversalBle`'s static platform facade with no injection seam): fixes for
   final-review findings #3, #5, #6, #7 were verified by code inspection, not tests. Re-check them
