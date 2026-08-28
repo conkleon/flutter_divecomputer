@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:dive_computer/dive_computer.dart';
 
+import 'ble_download_support.dart';
+
 void main() {
   runApp(const MyApp());
 }
@@ -132,6 +134,20 @@ class _BleDebugScreenState extends State<BleDebugScreen> {
   final Map<String, BleScanResult> _found = {};
   StreamSubscription<BleScanResult>? _scanSub;
 
+  List<Computer> _supported = const [];
+  BleScanResult? _selectedDevice;
+  Computer? _selectedComputer;
+  List<Dive> _dives = const [];
+  bool _busy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    DiveComputer.instance.supportedComputers.then((c) {
+      if (mounted) setState(() => _supported = c);
+    });
+  }
+
   void _print(String line) {
     setState(() => _log.insert(0, line));
     // ignore: avoid_print
@@ -151,22 +167,49 @@ class _BleDebugScreenState extends State<BleDebugScreen> {
     );
   }
 
-  Future<void> _connectAndDownload(BleScanResult device) async {
+  void _selectDevice(BleScanResult d) {
+    setState(() {
+      _selectedDevice = d;
+      _selectedComputer = defaultComputerFor(d, _supported);
+      _dives = const [];
+    });
+  }
+
+  Future<void> _connectAndDownload() async {
+    final device = _selectedDevice;
+    final computer = _selectedComputer;
+    if (device == null) return;
+    if (computer == null) {
+      _print('No libdivecomputer descriptor for '
+          '${device.profile?.vendorHint ?? "this device"} — is the plugin '
+          'connection open?');
+      return;
+    }
+    setState(() => _busy = true);
     try {
       _print('Connecting to ${device.name}...');
       await dc.connectBle(device);
-      _print('Connected. Downloading...');
-      final dives = await dc.download(
-        Computer(device.profile?.vendorHint ?? 'Unknown',
-            device.profile?.productHint ?? device.name),
-        ComputerTransport.ble,
-      );
-      _print('Downloaded ${dives.length} dives');
+      if (!mounted) return;
+      _print('Connected. Downloading full dive log as $computer ...');
+      final dives = await dc.download(computer, ComputerTransport.ble);
+      if (!mounted) return;
+      setState(() => _dives = dives);
+      _print('Downloaded ${dives.length} dives — full dump follows');
+      for (final dive in dives) {
+        for (final line in describeDiveVerbose(dive)) {
+          _print(line);
+        }
+      }
     } catch (e) {
       _print('ERROR: $e');
     } finally {
-      await dc.disconnectBle();
-      _print('Disconnected.');
+      try {
+        await dc.disconnectBle();
+        _print('Disconnected.');
+      } catch (e) {
+        _print('Disconnect error (ignored): $e');
+      }
+      if (mounted) setState(() => _busy = false);
     }
   }
 
@@ -176,31 +219,104 @@ class _BleDebugScreenState extends State<BleDebugScreen> {
     super.dispose();
   }
 
+  Widget _selectedDevicePanel(BleScanResult device) {
+    final candidates = candidateComputersFor(device, _supported);
+    final vendor = device.profile?.vendorHint ?? 'matching';
+    final dropdownValue =
+        candidates.contains(_selectedComputer) ? _selectedComputer : null;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Selected: ${device.name.isEmpty ? "(unnamed)" : device.name}',
+            style: const TextStyle(fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 4),
+          if (candidates.isEmpty)
+            Text('No BLE-capable $vendor descriptor found in libdivecomputer')
+          else
+            DropdownButton<Computer>(
+              isExpanded: true,
+              value: dropdownValue,
+              hint: const Text('Choose descriptor'),
+              items: [
+                for (final c in candidates)
+                  DropdownMenuItem<Computer>(
+                    value: c,
+                    child: Text('${c.vendor} ${c.product}'),
+                  ),
+              ],
+              onChanged: _busy
+                  ? null
+                  : (v) => setState(() => _selectedComputer = v),
+            ),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: ElevatedButton(
+              onPressed: _busy ? null : _connectAndDownload,
+              child: const Text('Connect & download'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final selectedDevice = _selectedDevice;
     return Column(
       children: [
         Padding(
           padding: const EdgeInsets.all(8),
-          child: ElevatedButton(
-            onPressed: _startScan,
-            child: const Text('Scan for known BLE devices'),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: ElevatedButton(
+              onPressed: _busy ? null : _startScan,
+              child: const Text('Scan for Mares / Cressi'),
+            ),
           ),
         ),
+        if (selectedDevice != null) _selectedDevicePanel(selectedDevice),
         Expanded(
           child: ListView(
+            padding: const EdgeInsets.all(8),
             children: [
+              const Text('Found devices',
+                  style: TextStyle(fontWeight: FontWeight.bold)),
               for (final device in _found.values)
                 ListTile(
+                  dense: true,
+                  selected: identical(device, _selectedDevice),
                   title: Text(device.name.isEmpty ? '(unnamed)' : device.name),
-                  subtitle: Text('${device.id}  rssi=${device.rssi}'),
-                  trailing: TextButton(
-                    onPressed: () => _connectAndDownload(device),
-                    child: const Text('Connect + download'),
+                  subtitle: Text('${device.id}  rssi=${device.rssi}  ·  '
+                      '${device.profile?.vendorHint ?? "?"}'),
+                  onTap: () => _selectDevice(device),
+                ),
+              const Divider(),
+              Text('Dives (${_dives.length})',
+                  style: const TextStyle(fontWeight: FontWeight.bold)),
+              for (final dive in _dives)
+                Card(
+                  child: ListTile(
+                    dense: true,
+                    title: Text(formatDiveSummary(dive)),
+                    onTap: () {
+                      for (final l in describeDiveVerbose(dive)) {
+                        _print(l);
+                      }
+                    },
                   ),
                 ),
               const Divider(),
-              for (final line in _log) Text(line),
+              const Text('Log',
+                  style: TextStyle(fontWeight: FontWeight.bold)),
+              for (final line in _log)
+                Text(line,
+                    style: const TextStyle(
+                        fontFamily: 'monospace', fontSize: 12)),
             ],
           ),
         ),
