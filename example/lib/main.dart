@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:dive_computer/dive_computer.dart';
+import 'package:universal_ble/universal_ble.dart';
 
 import 'ble_download_support.dart';
 
@@ -161,7 +162,13 @@ class _BleDebugScreenState extends State<BleDebugScreen> {
     print('[BleDebug] $line');
   }
 
-  void _startScan() {
+  Future<void> _startScan() async {
+    try {
+      await UniversalBle.requestPermissions();
+    } catch (e) {
+      _print('Permission request failed: $e');
+      return;
+    }
     _scanSub?.cancel();
     setState(() => _found.clear());
     _print('Scan started');
