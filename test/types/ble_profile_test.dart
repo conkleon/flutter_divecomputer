@@ -45,4 +45,49 @@ void main() {
       expect(a.matchesName('foobar'), isTrue);
     });
   });
+
+  group('BleProfiles.known registry', () {
+    test('known contains exactly the Mares and Cressi profiles', () {
+      expect(BleProfiles.known,
+          orderedEquals([BleProfiles.maresBluelink, BleProfiles.cressiGoa]));
+    });
+
+    test('Mares BlueLink profile matches its advertised names', () {
+      for (final name in const [
+        'Mares bluelink pro',
+        'Mares Genius',
+        'Genius',
+        'Mares Sirius',
+      ]) {
+        expect(BleProfiles.match(name), same(BleProfiles.maresBluelink),
+            reason: name);
+      }
+      expect(BleProfiles.maresBluelink.serviceUuid,
+          '544e326b-5b72-c6b0-1c46-41c1bc448118');
+      expect(BleProfiles.maresBluelink.vendorHint, 'Mares');
+      expect(BleProfiles.maresBluelink.productHint, 'Genius');
+      // Characteristics + write mode left to property-based discovery.
+      expect(BleProfiles.maresBluelink.writeCharUuid, isNull);
+      expect(BleProfiles.maresBluelink.notifyCharUuid, isNull);
+      expect(BleProfiles.maresBluelink.writeWithResponse, isNull);
+    });
+
+    test('Cressi Goa profile matches GOA_/CARESIO_/bare-model names', () {
+      for (final name in const ['GOA_1A2B', 'CARESIO_09', '2_ab12', '13_00ff']) {
+        expect(BleProfiles.match(name), same(BleProfiles.cressiGoa),
+            reason: name);
+      }
+      expect(BleProfiles.cressiGoa.serviceUuid,
+          '6e400001-b5a3-f393-e0a9-e50e24dc10b8');
+      expect(BleProfiles.cressiGoa.vendorHint, 'Cressi');
+      expect(BleProfiles.cressiGoa.productHint, 'Goa');
+      expect(BleProfiles.cressiGoa.writeCharUuid, isNull);
+      expect(BleProfiles.cressiGoa.notifyCharUuid, isNull);
+    });
+
+    test('an unrelated device name matches nothing', () {
+      expect(BleProfiles.match('Garmin Descent Mk2'), isNull);
+      expect(BleProfiles.match('Perdix AI'), isNull);
+    });
+  });
 }

@@ -65,30 +65,56 @@ class BleProfile {
 class BleProfiles {
   BleProfiles._();
 
-  static const List<BleProfile> known = [maresBluelink];
+  /// The profiles scanning matches against. Not `const` — [cressiGoa] holds
+  /// a [RegExp], which has no const constructor.
+  static final List<BleProfile> known = [maresBluelink, cressiGoa];
 
-  /// Mares BLE dive computers (`DC_FAMILY_MARES_ICONHD`) — the family that
-  /// covers the **Sirius** / **Sirius L** (BLE-only, libdivecomputer models
-  /// 0x2F / 0x33), plus Quad / Quad Ci / Quad 2, Genius, Smart Air,
-  /// Puck Pro+ / Puck 4, and others.
+  /// Mares BLE dive computers (`DC_FAMILY_MARES_ICONHD`).
+  ///
+  /// Two ways a Mares reaches us over BLE:
+  ///   - **BLE-native** (Mares Genius): the computer itself advertises,
+  ///     typically as `Mares Genius`.
+  ///   - **BlueLink Pro dongle** (Quad, Puck Pro+, Smart Air, Sirius and
+  ///     other contact-pin models): the dongle is the BLE peripheral and
+  ///     advertises `Mares bluelink pro`.
   ///
   /// Service UUID is the "Mares BlueLink Pro" service (Subsurface
-  /// `core/qt-ble.cpp`); native-BLE models like the Sirius expose the same
-  /// one. The write/notify characteristics are left to property-based
-  /// discovery (as Subsurface does for Mares) — for reference, a Mares
-  /// BlueLink service typically exposes:
-  ///   write  : 99a91ebd-b21f-1689-bb43-681f1f55e966  (write-without-response)
-  ///   notify : 1d1aae28-d2a8-91a1-1242-9d2973fbe571  (notify)
+  /// `core/qt-ble.cpp` `serial_service_uuids[]`); the Genius exposes the
+  /// same one. Write/notify characteristics are left to property-based
+  /// discovery (as Subsurface does for Mares).
   ///
-  /// `namePatterns` is a best guess — confirm the Sirius's actual advertised
-  /// name during a scan and widen/narrow this if needed. `productHint`
-  /// targets the plain Sirius; the Icon HD backend reads the true model
-  /// from the device handshake, so a Sirius L should still enumerate.
+  /// `productHint` is `Genius` because that descriptor exists in the
+  /// vendored libdivecomputer build and drives the `mares_iconhd` backend;
+  /// there is no `Sirius` descriptor in this build. The example app lets
+  /// the user override the descriptor when their model differs.
+  ///
+  /// All name patterns + the UUID are reference-derived and UNVERIFIED
+  /// against hardware — if a device never shows up in a scan, widen
+  /// `namePatterns` here first.
   static const maresBluelink = BleProfile(
-    namePatterns: ['Sirius'],
+    namePatterns: ['Mares bluelink pro', 'Mares Genius', 'Genius', 'Sirius'],
     serviceUuid: '544e326b-5b72-c6b0-1c46-41c1bc448118',
     vendorHint: 'Mares',
-    productHint: 'Sirius',
+    productHint: 'Genius',
+  );
+
+  /// Cressi BLE dive computers (`DC_FAMILY_CRESSI_GOA`) — Goa, Cartesio,
+  /// Neon, Nepto, Michelangelo and relatives.
+  ///
+  /// Service UUID is Cressi's own 128-bit UUID (Subsurface
+  /// `core/qt-ble.cpp`), NOT the generic Nordic UART service it resembles.
+  /// Cressi devices advertise as `GOA_xxxx`, `CARESIO_xxxx` (sic — Cressi
+  /// spells it that way), or a bare `<model>_<4 hex>` (Subsurface
+  /// `core/btdiscovery.cpp`), hence the regex. Write/notify characteristics
+  /// are left to property-based discovery.
+  ///
+  /// UNVERIFIED against hardware.
+  static final cressiGoa = BleProfile(
+    namePatterns: const ['GOA_', 'CARESIO_'],
+    nameRegExp: RegExp(r'^[1-9][0-9]?_[0-9a-f]{4}$'),
+    serviceUuid: '6e400001-b5a3-f393-e0a9-e50e24dc10b8',
+    vendorHint: 'Cressi',
+    productHint: 'Goa',
   );
 
   /// UNVERIFIED reference profile — the Nordic UART Service is a standard,
