@@ -133,8 +133,6 @@ class DiveComputerFfi {
       'iterator creation',
     );
 
-    final computers = <Computer>[];
-
     int result;
     final desc = calloc<ffi.Pointer<dc_descriptor_t>>();
     while ((result = _bindings.dc_iterator_next(iterator.value, desc.cast())) ==
@@ -151,7 +149,6 @@ class DiveComputerFfi {
         product.toDartString(),
         transports: transports,
       );
-      computers.add(computer);
       _computerDescriptorCache.addEntries([MapEntry(computer, desc.value)]);
     }
     _handleResult(result, 'iterator next');
@@ -161,7 +158,10 @@ class DiveComputerFfi {
       'iterator freeing',
     );
 
-    return computers;
+    // Return the deduped cache keys, matching every subsequent call: the
+    // iterator can yield duplicate vendor+product descriptors, and duplicate
+    // Computers assert in a DropdownButton in debug builds.
+    return _computerDescriptorCache.keys.toList();
   }
 
   static void download(

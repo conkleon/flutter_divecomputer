@@ -2417,7 +2417,7 @@ lands, ideally alongside Task 13:
   (PARTLY DONE in commit `91bc5bc`: characteristics are now discovered/validated by GATT
   property at connect time — a missing write/notify characteristic now throws at connect, not
   deep at the first GATT write. The retry-3× and log-wording parts remain.)
-  NOTE (2026-08-28): a matched-but-wrong-model device is now recoverable via the example app's descriptor dropdown (Task 5), but the `BleTransport` retry-3x and log-wording parts remain open.
+  NOTE (2026-08-28): a matched-but-wrong-model device is now recoverable via the example app's descriptor dropdown (Task 5), but the `BleTransport` retry-3× and log-wording parts remain open.
 - **#12** `DiveComputerFfi._connectBle`: wrap `dc_custom_open` in try/finally — leaks the
   `callbacks` struct + the one-pointer `iostream` cell on failure, and leaks the `iostream` cell
   even on success. Add a comment that freeing `callbacks` right after open is safe only because

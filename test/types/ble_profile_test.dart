@@ -39,11 +39,6 @@ void main() {
     test('returns null when nothing in known matches', () {
       expect(BleProfiles.match('Suunto EON Steel'), isNull);
     });
-
-    test('returns the first matching profile in known', () {
-      const a = BleProfile(namePatterns: ['foo'], serviceUuid: 's1');
-      expect(a.matchesName('foobar'), isTrue);
-    });
   });
 
   group('BleProfiles.known registry', () {
@@ -73,7 +68,13 @@ void main() {
     });
 
     test('Cressi Goa profile matches GOA_/CARESIO_/bare-model names', () {
-      for (final name in const ['GOA_1A2B', 'CARESIO_09', '2_ab12', '13_00ff']) {
+      for (final name in const [
+        'GOA_1A2B',
+        'CARESIO_09',
+        '2_ab12',
+        '13_00ff',
+        '2_AB12', // uppercase hex — regex is case-insensitive
+      ]) {
         expect(BleProfiles.match(name), same(BleProfiles.cressiGoa),
             reason: name);
       }

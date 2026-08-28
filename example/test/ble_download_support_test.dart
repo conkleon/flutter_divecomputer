@@ -36,6 +36,16 @@ void main() {
       const noHint = BleProfile(namePatterns: ['x'], serviceUuid: 's');
       expect(candidateComputersFor(_scan(noHint), supported), isEmpty);
     });
+
+    test('dedupes duplicate vendor+product descriptors', () {
+      final dupA = Computer('Mares', 'Genius',
+          transports: [ComputerTransport.ble]);
+      final dupB = Computer('Mares', 'Genius',
+          transports: [ComputerTransport.ble]);
+      final c = candidateComputersFor(
+          _scan(BleProfiles.maresBluelink), [dupA, dupB]);
+      expect(c, hasLength(1));
+    });
   });
 
   group('defaultComputerFor', () {
@@ -70,6 +80,8 @@ void main() {
       expect(s, contains('2026-05-01'));
       expect(s, contains('2:05')); // 125 s
       expect(s, contains('18.4'));
+      // Both temp ends carry spacing and a unit.
+      expect(s, contains('temp 12.0 °C – 21.0 °C'));
     });
 
     test('renders — for null date, duration and max depth', () {
@@ -100,6 +112,34 @@ void main() {
       expect(lines.where((l) => l.contains('sample t=')).length, 2);
       // null Dive field renders a dash line
       expect(lines, contains('  salinity    —'));
+    });
+
+    test('expands salinity, one line per gasmix and one line per tank', () {
+      final dive = Dive('EEFF',
+          diveTime: 45, maxDepth: 6.0, avgDepth: 3.0, atmospheric: 1.0,
+          temperatureSurface: null, temperatureMinimum: null,
+          temperatureMaximum: null, diveMode: null,
+          dateTime: DateTime(2026, 4, 4),
+          salinity: Salinity(1, 1.03),
+          gasmixes: [
+            Gasmix(0, 0, helium: 0.0, oxygen: 0.32, nitrogen: 0.68),
+          ],
+          tanks: [
+            Tank(0, 0,
+                workpressure: 200.0, beginpressure: 210.0, endpressure: 50.0),
+          ],
+          samples: const []);
+      final lines = describeDiveVerbose(dive);
+      expect(lines, contains('  salinity    type=1 density=1.03'));
+      expect(
+          lines.firstWhere((l) => l.contains('gasmix[0]')),
+          allOf(contains('o2=0.32'), contains('he=0.0'), contains('n2=0.68'),
+              contains('usage=0')));
+      expect(
+          lines.firstWhere((l) => l.contains('tank[0]')),
+          allOf(contains('begin=210.0'), contains('end=50.0'),
+              contains('work=200.0'), contains('gasmix=0'),
+              contains('usage=0')));
     });
 
     test('dumps vendor, deco time and event time on a sample', () {

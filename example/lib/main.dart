@@ -156,10 +156,37 @@ class _BleDebugScreenState extends State<BleDebugScreen> {
     });
   }
 
+  /// A realistic dive log is tens of thousands of verbose lines; cap what the
+  /// in-memory console keeps so the widget tree and the O(n) inserts stay
+  /// bounded.
+  static const _maxLogLines = 2000;
+
   void _print(String line) {
-    if (mounted) setState(() => _log.insert(0, line));
     // ignore: avoid_print
     print('[BleDebug] $line');
+    if (!mounted) return;
+    setState(() {
+      _log.insert(0, line);
+      if (_log.length > _maxLogLines) {
+        _log.removeRange(_maxLogLines, _log.length);
+      }
+    });
+  }
+
+  /// Batch variant of [_print] for bulk dumps: one `setState` and one cap
+  /// trim for the whole batch instead of one per line.
+  void _printAll(List<String> lines) {
+    for (final l in lines) {
+      // ignore: avoid_print
+      print('[BleDebug] $l');
+    }
+    if (!mounted) return;
+    setState(() {
+      _log.insertAll(0, lines.reversed);
+      if (_log.length > _maxLogLines) {
+        _log.removeRange(_maxLogLines, _log.length);
+      }
+    });
   }
 
   Future<void> _startScan() async {
@@ -169,11 +196,13 @@ class _BleDebugScreenState extends State<BleDebugScreen> {
       _print('Permission request failed: $e');
       return;
     }
-    _scanSub?.cancel();
+    if (!mounted) return;
+    await _scanSub?.cancel();
     setState(() => _found.clear());
     _print('Scan started');
     _scanSub = dc.scanForBleDevices().listen(
       (result) {
+        if (!mounted) return;
         setState(() => _found[result.id] = result);
         _print('Found: $result');
       },
@@ -204,16 +233,20 @@ class _BleDebugScreenState extends State<BleDebugScreen> {
       _print('Connecting to ${device.name}...');
       await dc.connectBle(device);
       if (!mounted) return;
+      // An untimed LE scan running alongside a GATT transfer degrades
+      // throughput/stability on Android. Stopping it clears universal_ble's
+      // seen-device cache, so tell the user the found list is now stale.
+      await _scanSub?.cancel();
+      _scanSub = null;
+      _print('Scan stopped for transfer. Re-scan to connect again.');
       _print('Connected. Downloading full dive log as $computer ...');
       final dives = await dc.download(computer, ComputerTransport.ble);
       if (!mounted) return;
       setState(() => _dives = dives);
       _print('Downloaded ${dives.length} dives — full dump follows');
-      for (final dive in dives) {
-        for (final line in describeDiveVerbose(dive)) {
-          _print(line);
-        }
-      }
+      _printAll([
+        for (final dive in dives) ...describeDiveVerbose(dive),
+      ]);
     } catch (e) {
       _print('ERROR: $e');
     } finally {
@@ -294,6 +327,7 @@ class _BleDebugScreenState extends State<BleDebugScreen> {
           ),
         ),
         if (selectedDevice != null) _selectedDevicePanel(selectedDevice),
+        // Top region: found devices + downloaded dives, one scroll view.
         Expanded(
           child: ListView(
             padding: const EdgeInsets.all(8),
@@ -303,11 +337,13 @@ class _BleDebugScreenState extends State<BleDebugScreen> {
               for (final device in _found.values)
                 ListTile(
                   dense: true,
-                  selected: identical(device, _selectedDevice),
+                  // The scan replaces the BleScanResult object on every
+                  // advertisement, so match on id, not identity.
+                  selected: device.id == _selectedDevice?.id,
                   title: Text(device.name.isEmpty ? '(unnamed)' : device.name),
                   subtitle: Text('${device.id}  rssi=${device.rssi}  ·  '
                       '${device.profile?.vendorHint ?? "?"}'),
-                  onTap: () => _selectDevice(device),
+                  onTap: _busy ? null : () => _selectDevice(device),
                 ),
               const Divider(),
               Text('Dives (${_dives.length})',
@@ -317,21 +353,31 @@ class _BleDebugScreenState extends State<BleDebugScreen> {
                   child: ListTile(
                     dense: true,
                     title: Text(formatDiveSummary(dive)),
-                    onTap: () {
-                      for (final l in describeDiveVerbose(dive)) {
-                        _print(l);
-                      }
-                    },
+                    onTap: () => _printAll(describeDiveVerbose(dive)),
                   ),
                 ),
-              const Divider(),
-              const Text('Log',
-                  style: TextStyle(fontWeight: FontWeight.bold)),
-              for (final line in _log)
-                Text(line,
-                    style: const TextStyle(
-                        fontFamily: 'monospace', fontSize: 12)),
             ],
+          ),
+        ),
+        const Divider(height: 1),
+        const Padding(
+          padding: EdgeInsets.fromLTRB(8, 4, 8, 0),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child:
+                Text('Log', style: TextStyle(fontWeight: FontWeight.bold)),
+          ),
+        ),
+        // Bottom region: the console, lazily built and bounded.
+        Expanded(
+          child: ListView.builder(
+            padding: const EdgeInsets.all(8),
+            itemCount: _log.length,
+            itemBuilder: (context, i) => Text(
+              _log[i],
+              style: const TextStyle(
+                  fontFamily: 'monospace', fontSize: 12),
+            ),
           ),
         ),
       ],

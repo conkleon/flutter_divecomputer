@@ -43,6 +43,14 @@ class DiveComputer implements DiveComputerInterface {
   Completer<List<Computer>>? _supportedComputers;
   Completer<List<Dive>>? _downloadedDives;
 
+  /// Memoized [supportedComputers] request. Concurrent callers (the example
+  /// app now has two: `_MyAppState` and `_BleDebugScreenState`) share one
+  /// future and one isolate round-trip; without this the second call clobbers
+  /// [_supportedComputers], the second reply throws in the port handler, and
+  /// the first caller's future never resolves. Cleared in [closeConnection] so
+  /// a close/reopen re-enumerates.
+  Future<List<Computer>>? _supportedComputersRequest;
+
   final BleTransport _bleTransport = BleTransport(UniversalBleCentral());
   Completer<void>? _bleBridgeReleased;
 
@@ -60,9 +68,16 @@ class DiveComputer implements DiveComputerInterface {
       if (message is SendPort) {
         _sendPort.complete(message);
       } else if (message is List<Computer>) {
-        _supportedComputers?.complete(message);
+        // Guarded like _BleBridgeReleased below: a stray/duplicate reply must
+        // not call complete() on an already-completed completer (throws here
+        // and wedges the port handler).
+        if (_supportedComputers?.isCompleted == false) {
+          _supportedComputers?.complete(message);
+        }
       } else if (message is List<Dive>) {
-        _downloadedDives?.complete(message);
+        if (_downloadedDives?.isCompleted == false) {
+          _downloadedDives?.complete(message);
+        }
       } else if (message is _BleBridgeReleased) {
         // Guarded: complete() on an already-completed completer throws inside
         // this listener and would wedge the singleton's port handler.
@@ -95,6 +110,7 @@ class DiveComputer implements DiveComputerInterface {
   @override
   void closeConnection() {
     _send((DiveComputerMethod.closeConnection, []));
+    _supportedComputersRequest = null;
   }
 
   @override
@@ -108,9 +124,12 @@ class DiveComputer implements DiveComputerInterface {
   }
 
   @override
-  Future<List<Computer>> get supportedComputers async {
+  Future<List<Computer>> get supportedComputers =>
+      _supportedComputersRequest ??= _requestSupportedComputers();
+
+  Future<List<Computer>> _requestSupportedComputers() async {
     await _send((DiveComputerMethod.supportedComputers, []));
-    return (_supportedComputers = Completer()).future;
+    return (_supportedComputers = Completer<List<Computer>>()).future;
   }
 
   @override

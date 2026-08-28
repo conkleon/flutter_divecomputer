@@ -111,7 +111,7 @@ class BleProfiles {
   /// UNVERIFIED against hardware.
   static final cressiGoa = BleProfile(
     namePatterns: const ['GOA_', 'CARESIO_'],
-    nameRegExp: RegExp(r'^[1-9][0-9]?_[0-9a-f]{4}$'),
+    nameRegExp: RegExp(r'^[1-9][0-9]?_[0-9a-f]{4}$', caseSensitive: false),
     serviceUuid: '6e400001-b5a3-f393-e0a9-e50e24dc10b8',
     vendorHint: 'Cressi',
     productHint: 'Goa',

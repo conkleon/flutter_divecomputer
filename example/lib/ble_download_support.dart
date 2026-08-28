@@ -15,7 +15,9 @@ List<Computer> candidateComputersFor(
   final ble = sameVendor
       .where((c) => c.transports.contains(ComputerTransport.ble))
       .toList(growable: false);
-  return ble.isNotEmpty ? ble : sameVendor;
+  // Dedupe: libdivecomputer can expose duplicate vendor+product descriptors,
+  // and duplicate DropdownButton items assert in debug builds.
+  return (ble.isNotEmpty ? ble : sameVendor).toSet().toList();
 }
 
 /// The descriptor to preselect for [device]: the [candidateComputersFor]
@@ -52,10 +54,13 @@ String _date(DateTime? dt) => dt == null
 String formatDiveSummary(Dive dive) =>
     '${_date(dive.dateTime)}  •  ${_dur(dive.diveTime)}  •  '
     'max ${_num(dive.maxDepth, unit: ' m')}  •  '
-    'temp ${_num(dive.temperatureMinimum)}–${_num(dive.temperatureMaximum, unit: ' °C')}  •  '
+    'temp ${_num(dive.temperatureMinimum, unit: ' °C')} – ${_num(dive.temperatureMaximum, unit: ' °C')}  •  '
     'gas ${dive.gasmixes?.length ?? 0}  •  ${dive.samples.length} samples';
 
 List<String> describeDiveVerbose(Dive dive) {
+  final salinity = dive.salinity;
+  final gasmixes = dive.gasmixes ?? const <Gasmix>[];
+  final tanks = dive.tanks ?? const <Tank>[];
   final lines = <String>[
     'Dive ${dive.hash}',
     '  date        ${_date(dive.dateTime)}',
@@ -67,9 +72,19 @@ List<String> describeDiveVerbose(Dive dive) {
     '  tempMin     ${_num(dive.temperatureMinimum, unit: ' °C')}',
     '  tempMax     ${_num(dive.temperatureMaximum, unit: ' °C')}',
     '  diveMode    ${dive.diveMode ?? '—'}',
-    '  salinity    ${dive.salinity?.density ?? '—'}',
+    if (salinity == null)
+      '  salinity    —'
+    else
+      '  salinity    type=${salinity.salinity} density=${salinity.density}',
     '  gasmixes    ${dive.gasmixes?.length ?? 0}',
+    for (var i = 0; i < gasmixes.length; i++)
+      '  gasmix[$i]  o2=${gasmixes[i].oxygen} he=${gasmixes[i].helium} '
+          'n2=${gasmixes[i].nitrogen} usage=${gasmixes[i].usage}',
     '  tanks       ${dive.tanks?.length ?? 0}',
+    for (var i = 0; i < tanks.length; i++)
+      '  tank[$i]  begin=${tanks[i].beginpressure} end=${tanks[i].endpressure} '
+          'work=${tanks[i].workpressure} gasmix=${tanks[i].gasmix} '
+          'usage=${tanks[i].usage}',
     '  samples     ${dive.samples.length}',
   ];
   for (final s in dive.samples) {
