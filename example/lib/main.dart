@@ -144,12 +144,19 @@ class _BleDebugScreenState extends State<BleDebugScreen> {
   void initState() {
     super.initState();
     DiveComputer.instance.supportedComputers.then((c) {
-      if (mounted) setState(() => _supported = c);
+      if (!mounted) return;
+      setState(() {
+        _supported = c;
+        final device = _selectedDevice;
+        if (device != null && _selectedComputer == null) {
+          _selectedComputer = defaultComputerFor(device, c);
+        }
+      });
     });
   }
 
   void _print(String line) {
-    setState(() => _log.insert(0, line));
+    if (mounted) setState(() => _log.insert(0, line));
     // ignore: avoid_print
     print('[BleDebug] $line');
   }
