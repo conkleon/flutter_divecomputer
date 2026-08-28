@@ -13,7 +13,7 @@ import 'package:dive_computer/types/ble_scan_result.dart';
 import 'package:test/test.dart';
 
 const _profile = BleProfile(
-  namePattern: 'Test',
+  namePatterns: ['Test'],
   serviceUuid: 'service-1',
   writeCharUuid: 'write-1',
   notifyCharUuid: 'notify-1',
@@ -23,7 +23,7 @@ const _profile = BleProfile(
 /// Profile with no explicit characteristic UUIDs — BleTransport must discover
 /// them by GATT property.
 const _discoveryProfile = BleProfile(
-  namePattern: 'Test',
+  namePatterns: ['Test'],
   serviceUuid: 'service-1',
 );
 
@@ -141,7 +141,7 @@ void main() {
 
     test('an explicit profile UUID wins over property discovery', () async {
       const profile = BleProfile(
-        namePattern: 'Test',
+        namePatterns: ['Test'],
         serviceUuid: 'service-1',
         writeCharUuid: 'explicit-w',
         notifyCharUuid: 'explicit-n',

@@ -5,11 +5,8 @@ import 'package:test/test.dart';
 void main() {
   test('BleScanResult carries the matched profile, or null', () {
     const profile = BleProfile(
-      namePattern: 'Test',
+      namePatterns: ['Test'],
       serviceUuid: 's',
-      writeCharUuid: 'w',
-      notifyCharUuid: 'n',
-      writeWithResponse: false,
     );
     final matched =
         BleScanResult(id: 'abc', name: 'Test Device', rssi: -60, profile: profile);

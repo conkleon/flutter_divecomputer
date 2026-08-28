@@ -18,5 +18,5 @@ class BleScanResult {
 
   @override
   String toString() => 'BleScanResult($name, $id, rssi=$rssi, '
-      'profile=${profile?.vendorHint ?? profile?.namePattern})';
+      'profile=${profile?.vendorHint ?? profile?.namePatterns.join("/")})';
 }

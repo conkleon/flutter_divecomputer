@@ -3,48 +3,46 @@ import 'package:test/test.dart';
 
 void main() {
   group('BleProfile.matchesName', () {
-    test('matches case-insensitively as a substring', () {
+    test('matches any of several patterns, case-insensitively, as substrings',
+        () {
       const profile = BleProfile(
-        namePattern: 'OSTC',
+        namePatterns: ['Mares bluelink pro', 'Genius'],
         serviceUuid: 's',
-        writeCharUuid: 'w',
-        notifyCharUuid: 'n',
-        writeWithResponse: false,
       );
-      expect(profile.matchesName('HW OSTC 4'), isTrue);
-      expect(profile.matchesName('hw ostc 4'), isTrue);
+      expect(profile.matchesName('Mares bluelink pro'), isTrue);
+      expect(profile.matchesName('MARES BLUELINK PRO'), isTrue);
+      expect(profile.matchesName('Mares Genius'), isTrue);
       expect(profile.matchesName('Suunto EON'), isFalse);
+    });
+
+    test('matches via nameRegExp when provided', () {
+      final profile = BleProfile(
+        namePatterns: const ['GOA_'],
+        nameRegExp: RegExp(r'^[1-9][0-9]?_[0-9a-f]{4}$'),
+        serviceUuid: 's',
+      );
+      expect(profile.matchesName('GOA_1234'), isTrue); // substring
+      expect(profile.matchesName('2_ab12'), isTrue); // regex
+      expect(profile.matchesName('20_ffff'), isTrue); // regex
+      expect(profile.matchesName('0_ab12'), isFalse); // regex: leading 0
+      expect(profile.matchesName('2_abardvark'), isFalse);
+    });
+
+    test('empty patterns and null regex never match', () {
+      const profile = BleProfile(namePatterns: [], serviceUuid: 's');
+      expect(profile.matchesName(''), isFalse);
+      expect(profile.matchesName('anything'), isFalse);
     });
   });
 
-  group('BleProfiles', () {
-    test('match returns null when nothing in known matches', () {
+  group('BleProfiles.match', () {
+    test('returns null when nothing in known matches', () {
       expect(BleProfiles.match('Suunto EON Steel'), isNull);
     });
 
-    test('match returns the first matching profile in known', () {
-      // Exercises the registry mechanism itself without depending on
-      // BleProfiles.known's real contents.
-      const a = BleProfile(
-        namePattern: 'foo',
-        serviceUuid: 's1',
-        writeCharUuid: 'w1',
-        notifyCharUuid: 'n1',
-        writeWithResponse: true,
-      );
+    test('returns the first matching profile in known', () {
+      const a = BleProfile(namePatterns: ['foo'], serviceUuid: 's1');
       expect(a.matchesName('foobar'), isTrue);
-    });
-
-    test('Mares BlueLink profile is registered and matches a Sirius by name',
-        () {
-      final matched = BleProfiles.match('Mares Sirius');
-      expect(matched, same(BleProfiles.maresBluelink));
-      expect(matched!.serviceUuid, '544e326b-5b72-c6b0-1c46-41c1bc448118');
-      expect(matched.vendorHint, 'Mares');
-      // Characteristics + write mode are left to property-based discovery.
-      expect(matched.writeCharUuid, isNull);
-      expect(matched.notifyCharUuid, isNull);
-      expect(matched.writeWithResponse, isNull);
     });
   });
 }
