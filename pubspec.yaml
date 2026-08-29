@@ -33,7 +33,13 @@ flutter:
       windows:
         ffiPlugin: true
       android:
-        ffiPlugin: true
+        # NOT ffiPlugin here: Flutter's tool omits the GeneratedPluginRegistrant
+        # entry for a platform that sets BOTH ffiPlugin:true and pluginClass, so
+        # the RFCOMM MethodChannel would have no registered handler. The prebuilt
+        # libdivecomputer .so files are bundled via this plugin's own
+        # android/build.gradle (jniLibs.srcDirs), independent of ffiPlugin, and
+        # DiveComputerFfi loads them with DynamicLibrary.open().
+        package: app.divenote.dive_computer
         pluginClass: DiveComputerPlugin
       macos:
         ffiPlugin: true
