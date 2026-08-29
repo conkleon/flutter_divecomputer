@@ -4,11 +4,25 @@
   bridge for the Petousis/Nautilus Dive Log app; README rewritten to reflect
   that purpose, current platform support, and the Bluetooth/BLE transport
   gap (only USB/serial is implemented so far).
-* BLE: recognise Mares (BlueLink Pro dongle / Genius) and Cressi (Goa
-  family) dive computers during a scan. GATT service UUIDs and advertised
-  name patterns are derived from Subsurface and not yet hardware-verified.
+* BLE: recognise Mares (BlueLink Pro dongle / Genius), Cressi (Goa
+  family) and Shearwater (Petrel 2, Perdix / AI / 2, NERD 2, Teric,
+  Peregrine, Petrel 3, Tern, plus a separate Perdix 3 profile) dive
+  computers during a scan. GATT service UUIDs and advertised name
+  patterns are derived from Subsurface and not yet hardware-verified.
+  The Bluetooth-Classic-only Shearwaters (original Predator / Petrel /
+  NERD) are recognised but still need `ComputerTransport.bluetooth`,
+  which is unimplemented; the Perdix 3 has no descriptor in the bundled
+  libdivecomputer build yet, so its download can't resolve a backend.
 * `download()` now returns the dive computer's complete log in all build
   modes. Debug builds previously stopped after 5 dives.
+* Serial: `download()` takes an optional `serialPort` and a new
+  `serialPorts(computer)` lists the ports libdivecomputer enumerates for a
+  descriptor. Previously `_connectSerial` always opened the *first*
+  enumerated COM port, which on Windows is non-deterministic and picks the
+  wrong port when a Bluetooth-Classic dive computer (e.g. a Shearwater
+  Petrel) is paired as a virtual COM port. The example app's "Serial
+  computers" tab now prompts for the port. `serialPorts` results are
+  deduplicated (the iterator can report the same port twice).
 
 ## 0.0.1
 
