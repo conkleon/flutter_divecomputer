@@ -4,16 +4,15 @@ group 'app.divenote.dive_computer'
 version '1.0'
 
 buildscript {
+    ext.kotlin_version = '1.9.24'
     repositories {
         google()
         mavenCentral()
     }
 
     dependencies {
-        // The Android Gradle Plugin knows how to build native code with the NDK.
-        classpath 'com.android.tools.build:gradle:7.3.0'
-        // Kotlin for the method-channel RFCOMM plugin (AGP 7.3.0 is compatible with Kotlin 1.8.x).
-        classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:1.8.22'
+        classpath 'com.android.tools.build:gradle:8.6.0'
+        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
     }
 }
 
@@ -28,45 +27,37 @@ apply plugin: 'com.android.library'
 apply plugin: 'kotlin-android'
 
 android {
-    if (project.android.hasProperty("namespace")) {
-        namespace 'app.divenote.dive_computer'
-    }
+    namespace 'app.divenote.dive_computer'
 
-    // Bumping the plugin compileSdkVersion requires all clients of this plugin
-    // to bump the version in their app.
-    compileSdkVersion 33
+    // AGP 8 requires compileSdk >= 34; Flutter 3.32 apps compile against 35.
+    compileSdk 34
 
-    // Use the NDK version
-    // declared in /android/app/build.gradle file of the Flutter project.
-    // Replace it with a version number if this plugin requires a specfic NDK version.
-    // (e.g. ndkVersion "23.1.7779620")
+    // Use the NDK version declared in the Flutter app's android/app/build.gradle.
     ndkVersion android.ndkVersion
 
     sourceSets {
         main {
-            // Bundle so files with the final apk.
+            // Bundle the prebuilt libdivecomputer .so files into the final apk.
             jniLibs.srcDirs = ['../native/lib/android']
-            // Kotlin plugin source (kotlin-android usually adds this automatically;
-            // declared explicitly for older AGP wiring).
+            // Kotlin method-channel plugin source.
             java.srcDirs += 'src/main/kotlin'
         }
     }
 
     compileOptions {
-        sourceCompatibility JavaVersion.VERSION_1_8
-        targetCompatibility JavaVersion.VERSION_1_8
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
     }
 
     kotlinOptions {
-        jvmTarget = '1.8'
+        jvmTarget = '17'
     }
 
     defaultConfig {
-        minSdkVersion 19
+        minSdkVersion 21
     }
 }
 
 dependencies {
-    implementation 'androidx.core:core-ktx:1.10.1'
+    implementation 'androidx.core:core-ktx:1.13.1'
 }
-
