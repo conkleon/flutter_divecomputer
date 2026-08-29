@@ -20,8 +20,8 @@
   descriptor. Previously `_connectSerial` always opened the *first*
   enumerated COM port, which on Windows is non-deterministic and picks the
   wrong port when a Bluetooth-Classic dive computer (e.g. a Shearwater
-  Petrel) is paired as a virtual COM port. The example app's "Serial
-  computers" tab now prompts for the port. `serialPorts` results are
+  Petrel) is paired as a virtual COM port. The example app's "Serial /
+  Bluetooth" tab now prompts for the port. `serialPorts` results are
   deduplicated (the iterator can report the same port twice).
 * Bluetooth Classic (RFCOMM / SPP) transport — `ComputerTransport.bluetooth`
   is now implemented for **Windows** (via libdivecomputer's own

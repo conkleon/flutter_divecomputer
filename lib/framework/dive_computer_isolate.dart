@@ -120,6 +120,32 @@ class DiveComputer implements DiveComputerInterface {
         throw UnimplementedError('Message not implemented: $message');
       }
     });
+
+    // `onError` for the spawned isolate. Without listening here an uncaught
+    // error in the background isolate is silently dropped and every
+    // outstanding request future hangs forever. Surface it on whichever
+    // request is currently in flight.
+    _errorPort.listen((dynamic message) {
+      final (desc, trace) = message is List && message.length == 2
+          ? (message[0].toString(), message[1].toString())
+          : (message.toString(), '');
+      final error = RemoteError(desc, trace);
+      if (_supportedComputers?.isCompleted == false) {
+        _supportedComputers?.completeError(error);
+      }
+      if (_serialPorts?.isCompleted == false) {
+        _serialPorts?.completeError(error);
+      }
+      if (_bluetoothDevices?.isCompleted == false) {
+        _bluetoothDevices?.completeError(error);
+      }
+      if (_downloadedDives?.isCompleted == false) {
+        _downloadedDives?.completeError(error);
+      }
+      if (_bleBridgeReleased?.isCompleted == false) {
+        _bleBridgeReleased?.completeError(error);
+      }
+    });
   }
 
   Future<void> _send(IsolateMessage message) async {
@@ -226,25 +252,45 @@ class DiveComputer implements DiveComputerInterface {
         [computer, transport, lastFingerprint, bridge?.address, address],
       ));
     } catch (_) {
+      // Tear the transport down BEFORE freeing the bridge: disconnect() writes
+      // into the bridge (markClosed) and the 4ms mailbox timer can fire during
+      // its await — both would touch freed native memory if dispose() ran
+      // first.
+      if (transport == ComputerTransport.bluetooth && Platform.isAndroid) {
+        await _rfcommTransport.disconnect().catchError((_) {});
+      }
       if (bridge != null) {
         bridge.dispose();
         bridge = null;
       }
       _bleBridgeReleased = null;
-      if (transport == ComputerTransport.bluetooth && Platform.isAndroid) {
-        await _rfcommTransport.disconnect().catchError((_) {});
-      }
       rethrow;
     }
     try {
       return await (_downloadedDives = Completer()).future;
     } finally {
       if (bridge != null) {
-        await _bleBridgeReleased!.future;
-        bridge.dispose();
-        if (transport == ComputerTransport.bluetooth && Platform.isAndroid) {
-          await _rfcommTransport.disconnect();
+        // The _BleBridgeReleased handshake guarantees the FFI isolate is done
+        // with the bridge. Bounded so a lost handshake can't hang download()
+        // forever.
+        try {
+          await _bleBridgeReleased!.future
+              .timeout(const Duration(seconds: 60));
+        } on TimeoutException {
+          developer.log(
+            'Timed out waiting for _BleBridgeReleased handshake; '
+            'disposing bridge anyway',
+            name: 'DiveComputerIsolate',
+            level: 900,
+          );
+        } catch (_) {
+          // Isolate error already surfaced on _downloadedDives via _errorPort.
         }
+        // Disconnect the transport BEFORE dispose() — see the catch block.
+        if (transport == ComputerTransport.bluetooth && Platform.isAndroid) {
+          await _rfcommTransport.disconnect().catchError((_) {});
+        }
+        bridge.dispose();
       }
     }
   }

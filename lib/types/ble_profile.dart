@@ -84,8 +84,9 @@ class BleProfiles {
   ///
   /// The original Predator, Petrel (1) and NERD (1) are Bluetooth Classic
   /// (RFCOMM) only; they are still listed here so a scan recognises them, but
-  /// downloading needs `ComputerTransport.bluetooth`, which is not
-  /// implemented. Every BLE Shearwater advertises with the model name as a
+  /// downloading needs `ComputerTransport.bluetooth`, now implemented for
+  /// Windows + Android (bonded devices only). Every BLE Shearwater advertises
+  /// with the model name as a
   /// prefix (Subsurface `core/btdiscovery.cpp`), so a small set of substrings
   /// covers the family.
   ///

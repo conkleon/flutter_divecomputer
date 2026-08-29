@@ -143,7 +143,10 @@ class DiveComputerPlugin : FlutterPlugin, ActivityAware, MethodChannel.MethodCal
         }
         val a = adapter
         if (a == null) { result.error("no_adapter", "No Bluetooth adapter", null); return }
-        val list = a.bondedDevices.map { mapOf("name" to (it.name ?: ""), "address" to it.address) }
+        if (!a.isEnabled) { result.error("bluetooth_off", "Bluetooth is turned off", null); return }
+        // getBondedDevices() returns null when the adapter is disabled.
+        val bonded = a.bondedDevices ?: emptySet()
+        val list = bonded.map { mapOf("name" to (it.name ?: ""), "address" to it.address) }
         result.success(list)
       }
 
@@ -212,6 +215,11 @@ class DiveComputerPlugin : FlutterPlugin, ActivityAware, MethodChannel.MethodCal
   override fun onCancel(arguments: Any?) { eventSink = null }
 
   private fun startReader(s: BluetoothSocket) {
+    // Pin this reader to the connection generation it belongs to. A stale
+    // reader from a previous download (its socket closed, connectGen bumped by
+    // closeSocket()) must not deliver leftover bytes or a spurious
+    // endOfStream to the NEXT download's eventSink.
+    val myGen = connectGen.get()
     val t = Thread {
       val buf = ByteArray(4096)
       try {
@@ -220,13 +228,13 @@ class DiveComputerPlugin : FlutterPlugin, ActivityAware, MethodChannel.MethodCal
           if (n < 0) break
           if (n > 0) {
             val chunk = buf.copyOf(n)
-            mainHandler.post { eventSink?.success(chunk) }
+            mainHandler.post { if (connectGen.get() == myGen) eventSink?.success(chunk) }
           }
         }
       } catch (_: Exception) {
         // fall through to endOfStream
       }
-      mainHandler.post { eventSink?.endOfStream() }
+      mainHandler.post { if (connectGen.get() == myGen) eventSink?.endOfStream() }
     }
     t.isDaemon = true
     readerThread = t

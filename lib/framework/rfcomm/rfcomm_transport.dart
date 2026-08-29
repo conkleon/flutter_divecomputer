@@ -28,8 +28,6 @@ class RfcommTransport {
 
   bool get isConnected => _connected;
 
-  Future<bool> requestPermissions() => _channel.requestPermissions();
-
   Future<void> connect(String address) async {
     await _channel.connect(address);
     _connected = true;
@@ -76,6 +74,13 @@ class RfcommTransport {
     if (_writeInFlight) return;
     final bridge = _bridge;
     if (bridge == null || !_connected) return;
+    // libdivecomputer's close callback set closed = 1. Stop our own 4ms timer
+    // now instead of waiting for the facade's disconnect() — complements the
+    // teardown-before-dispose ordering in DiveComputer.download.
+    if (bridge.isClosed) {
+      _teardown();
+      return;
+    }
     final seq = bridge.pendingWriteSeq;
     if (seq == _lastServicedWriteSeq) return;
     _lastServicedWriteSeq = seq;

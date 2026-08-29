@@ -46,8 +46,11 @@ class MethodChannelRfcommChannel implements RfcommChannel {
   Future<void> connect(String address) =>
       _method.invokeMethod<void>('connect', {'address': address});
 
+  // Cached: receiveBroadcastStream() returns a fresh stream (and re-invokes
+  // the platform onListen/onCancel) on every access, but Kotlin holds exactly
+  // one eventSink — repeated access would silently steal the sink.
   @override
-  Stream<Uint8List> get inbound => _events
+  late final Stream<Uint8List> inbound = _events
       .receiveBroadcastStream()
       .map((e) => e is Uint8List ? e : Uint8List.fromList((e as List).cast()));
 

@@ -28,6 +28,10 @@ abstract class DiveComputerInterface {
   /// Bluetooth-Classic devices for [computer]: on Windows the paired devices
   /// libdivecomputer enumerates; on Android the OS bonded list. Pass the
   /// chosen one's `address` to [download] with `ComputerTransport.bluetooth`.
+  ///
+  /// The Windows path runs on the background isolate and requires
+  /// [supportedComputers] to have been awaited first (same caveat as
+  /// [serialPorts]).
   Future<List<BtDevice>> bluetoothDevices(Computer computer) {
     throw UnimplementedError();
   }

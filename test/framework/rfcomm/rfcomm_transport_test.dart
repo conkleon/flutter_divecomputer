@@ -11,6 +11,9 @@ void main() {
     final ch = FakeRfcommChannel();
     final t = RfcommTransport(ch);
     final bridge = BleBridge.allocate();
+    // LIFO: transport tears down first (stops the 4ms timer), then the bridge
+    // is freed. Regression guard for the write-after-free ordering bug.
+    addTearDown(() => t.disconnect());
     addTearDown(bridge.dispose);
 
     await t.connect('00:13:43:0A:A0:6F');
@@ -30,6 +33,9 @@ void main() {
     final ch = FakeRfcommChannel();
     final t = RfcommTransport(ch);
     final bridge = BleBridge.allocate();
+    // LIFO: transport tears down first (stops the 4ms timer), then the bridge
+    // is freed. Regression guard for the write-after-free ordering bug.
+    addTearDown(() => t.disconnect());
     addTearDown(bridge.dispose);
     await t.connect('x');
     t.attachBridge(bridge);

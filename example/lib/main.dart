@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:dive_computer/dive_computer.dart';
 import 'package:universal_ble/universal_ble.dart';
@@ -45,10 +44,34 @@ class _MyAppState extends State<MyApp> {
   /// exist and lets the user pick — the plugin no longer guesses.
   Future<void> _downloadFrom(BuildContext context, Computer computer) async {
     final messenger = ScaffoldMessenger.of(context);
-    final transport = (computer.transports.contains(ComputerTransport.bluetooth) &&
-            defaultTargetPlatform == TargetPlatform.android)
-        ? ComputerTransport.bluetooth
-        : computer.transports.first;
+    final hasSerial = computer.transports.contains(ComputerTransport.serial);
+    final hasBluetooth =
+        computer.transports.contains(ComputerTransport.bluetooth);
+    final ComputerTransport transport;
+    if (hasSerial && hasBluetooth) {
+      final picked = await showDialog<ComputerTransport>(
+        context: context,
+        builder: (context) => SimpleDialog(
+          title: const Text('Connect over serial or Bluetooth?'),
+          children: [
+            SimpleDialogOption(
+              onPressed: () =>
+                  Navigator.pop(context, ComputerTransport.serial),
+              child: const Text('Serial (cable / COM port)'),
+            ),
+            SimpleDialogOption(
+              onPressed: () =>
+                  Navigator.pop(context, ComputerTransport.bluetooth),
+              child: const Text('Bluetooth (paired device)'),
+            ),
+          ],
+        ),
+      );
+      if (picked == null) return; // dialog dismissed
+      transport = picked;
+    } else {
+      transport = computer.transports.first;
+    }
     String? serialPort;
     try {
       if (transport == ComputerTransport.bluetooth) {
