@@ -68,6 +68,21 @@ void main() {
     });
   });
 
+  group('bluetoothCandidates', () {
+    test('filters bonded devices by the Shearwater Classic-BT profile', () {
+      const petrel = BtDevice('Petrel', '00:13:43:0A:A0:6F');
+      const earbuds = BtDevice('Baseus Encok', '11:22:33:44:55:66');
+      final out = bluetoothCandidates(
+          isShearwater: true, bonded: [petrel, earbuds]);
+      expect(out, [petrel]);
+    });
+
+    test('no profile -> all bonded devices', () {
+      const a = BtDevice('A', '00:00:00:00:00:01');
+      expect(bluetoothCandidates(isShearwater: false, bonded: [a]), [a]);
+    });
+  });
+
   group('formatDiveSummary', () {
     test('renders fields and dashes for nulls', () {
       final dive = Dive('AABB',

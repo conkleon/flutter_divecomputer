@@ -33,6 +33,18 @@ Computer? defaultComputerFor(BleScanResult device, List<Computer> supported) {
   return candidates.first;
 }
 
+/// Bonded devices worth offering: filtered to the Shearwater Classic-BT
+/// name patterns when [isShearwater], else all of [bonded].
+List<BtDevice> bluetoothCandidates({
+  required bool isShearwater,
+  required List<BtDevice> bonded,
+}) {
+  if (!isShearwater) return bonded;
+  return bonded
+      .where((d) => ClassicBtProfiles.shearwater.matchesName(d.name))
+      .toList();
+}
+
 String _num(num? v, {int frac = 1, String unit = ''}) =>
     v == null ? '—' : '${v.toStringAsFixed(frac)}$unit';
 

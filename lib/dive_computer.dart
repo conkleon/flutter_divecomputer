@@ -3,6 +3,8 @@ export 'package:dive_computer/framework/dive_computer_isolate.dart'
 
 export 'types/ble_profile.dart';
 export 'types/ble_scan_result.dart';
+export 'types/bt_device.dart';
+export 'types/classic_bt_profile.dart';
 export 'types/computer.dart';
 export 'types/dive.dart';
 

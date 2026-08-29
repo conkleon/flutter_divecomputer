@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:dive_computer/dive_computer.dart';
 import 'package:universal_ble/universal_ble.dart';
@@ -44,9 +45,52 @@ class _MyAppState extends State<MyApp> {
   /// exist and lets the user pick — the plugin no longer guesses.
   Future<void> _downloadFrom(BuildContext context, Computer computer) async {
     final messenger = ScaffoldMessenger.of(context);
-    final transport = computer.transports.first;
+    final transport = (computer.transports.contains(ComputerTransport.bluetooth) &&
+            defaultTargetPlatform == TargetPlatform.android)
+        ? ComputerTransport.bluetooth
+        : computer.transports.first;
     String? serialPort;
     try {
+      if (transport == ComputerTransport.bluetooth) {
+        if (!await dc.requestBluetoothPermissions()) {
+          messenger.showSnackBar(const SnackBar(
+              content: Text('Bluetooth permission denied')));
+          return;
+        }
+        final bonded = await dc.bluetoothDevices(computer);
+        if (bonded.isEmpty) {
+          messenger.showSnackBar(const SnackBar(
+              content: Text('No paired Bluetooth devices — pair the dive '
+                  'computer in system Bluetooth settings first')));
+          return;
+        }
+        if (!context.mounted) return;
+        final candidates = bluetoothCandidates(
+            isShearwater: computer.vendor.toLowerCase() == 'shearwater',
+            bonded: bonded);
+        final shown = candidates.isEmpty ? bonded : candidates;
+        final picked = shown.length == 1
+            ? shown.single
+            : await showDialog<BtDevice>(
+                context: context,
+                builder: (context) => SimpleDialog(
+                  title: const Text('Which paired device?'),
+                  children: [
+                    for (final d in shown)
+                      SimpleDialogOption(
+                        onPressed: () => Navigator.pop(context, d),
+                        child: Text('${d.name}  (${d.address})'),
+                      ),
+                  ],
+                ),
+              );
+        if (picked == null) return;
+        final dives = await dc.download(computer, ComputerTransport.bluetooth,
+            'exampleFingerprint', picked.address);
+        messenger.showSnackBar(
+            SnackBar(content: Text('Downloaded ${dives.length} dives')));
+        return;
+      }
       if (transport == ComputerTransport.serial) {
         final ports = await dc.serialPorts(computer);
         if (ports.isEmpty) {
@@ -92,7 +136,7 @@ class _MyAppState extends State<MyApp> {
             title: const Text('libdivecomputer ffi example'),
             bottom: const TabBar(
               tabs: [
-                Tab(text: 'Serial computers'),
+                Tab(text: 'Serial / Bluetooth'),
                 Tab(text: 'BLE debug'),
               ],
             ),
