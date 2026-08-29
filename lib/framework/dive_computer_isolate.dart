@@ -8,6 +8,8 @@ import 'package:dive_computer/framework/dive_computer_ffi.dart';
 import 'package:dive_computer/framework/ble/ble_bridge_state.dart';
 import 'package:dive_computer/framework/ble/ble_central.dart';
 import 'package:dive_computer/framework/ble/ble_transport.dart';
+import 'package:dive_computer/framework/rfcomm/rfcomm_channel.dart';
+import 'package:dive_computer/framework/rfcomm/rfcomm_transport.dart';
 import 'package:dive_computer/types/ble_scan_result.dart';
 import 'package:dive_computer/types/bt_device.dart';
 import 'package:dive_computer/types/computer.dart';
@@ -59,6 +61,9 @@ class DiveComputer implements DiveComputerInterface {
 
   final BleTransport _bleTransport = BleTransport(UniversalBleCentral());
   Completer<void>? _bleBridgeReleased;
+
+  final RfcommChannel _rfcommChannel = MethodChannelRfcommChannel();
+  late final RfcommTransport _rfcommTransport = RfcommTransport(_rfcommChannel);
 
   DiveComputer._() {
     _receivePort = ReceivePort();
@@ -160,13 +165,18 @@ class DiveComputer implements DiveComputerInterface {
 
   @override
   Future<List<BtDevice>> bluetoothDevices(Computer computer) async {
-    if (!Platform.isWindows) return const [];
-    await _send((DiveComputerMethod.bluetoothDevices, [computer]));
-    return (_bluetoothDevices = Completer<List<BtDevice>>()).future;
+    if (Platform.isAndroid) return _rfcommChannel.bondedDevices();
+    if (Platform.isWindows) {
+      await _send((DiveComputerMethod.bluetoothDevices, [computer]));
+      return (_bluetoothDevices = Completer<List<BtDevice>>()).future;
+    }
+    return const [];
   }
 
   @override
-  Future<bool> requestBluetoothPermissions() async => true;
+  Future<bool> requestBluetoothPermissions() => Platform.isAndroid
+      ? _rfcommChannel.requestPermissions()
+      : Future.value(true);
 
   @override
   Stream<BleScanResult> scanForBleDevices() => _bleTransport.scanForDevices();
@@ -201,6 +211,15 @@ class DiveComputer implements DiveComputerInterface {
         bridge = BleBridge.allocate();
         _bleTransport.attachBridge(bridge);
         _bleBridgeReleased = Completer<void>();
+      } else if (transport == ComputerTransport.bluetooth &&
+          Platform.isAndroid) {
+        if (address == null) {
+          throw ArgumentError('Android bluetooth download requires an address');
+        }
+        await _rfcommTransport.connect(address);
+        bridge = BleBridge.allocate();
+        _rfcommTransport.attachBridge(bridge);
+        _bleBridgeReleased = Completer<void>();
       }
       await _send((
         DiveComputerMethod.download,
@@ -212,6 +231,9 @@ class DiveComputer implements DiveComputerInterface {
         bridge = null;
       }
       _bleBridgeReleased = null;
+      if (transport == ComputerTransport.bluetooth && Platform.isAndroid) {
+        await _rfcommTransport.disconnect().catchError((_) {});
+      }
       rethrow;
     }
     try {
@@ -220,6 +242,9 @@ class DiveComputer implements DiveComputerInterface {
       if (bridge != null) {
         await _bleBridgeReleased!.future;
         bridge.dispose();
+        if (transport == ComputerTransport.bluetooth && Platform.isAndroid) {
+          await _rfcommTransport.disconnect();
+        }
       }
     }
   }

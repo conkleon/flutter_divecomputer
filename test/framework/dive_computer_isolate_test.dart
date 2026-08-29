@@ -93,4 +93,19 @@ void main() {
     expect(source,
         contains('DiveComputerFfi.bluetoothDevices(message.\$2[0] as Computer)'));
   });
+
+  test('Android bluetooth download uses the RFCOMM channel + bridge', () {
+    // bluetoothDevices: Android via channel, Windows via isolate.
+    expect(source, contains('Platform.isAndroid'));
+    expect(source, contains('_rfcommChannel.bondedDevices()'));
+    // download bluetooth on Android: connect transport, allocate bridge, attach.
+    expect(source, contains('_rfcommTransport.connect('));
+    expect(source, contains('_rfcommTransport.attachBridge('));
+    // the download message for Android bluetooth carries a bridge address
+    expect(
+      RegExp(r'ComputerTransport\.bluetooth.*Platform\.isAndroid', dotAll: true)
+          .hasMatch(source),
+      isTrue,
+    );
+  });
 }
