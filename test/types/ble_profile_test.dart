@@ -42,9 +42,53 @@ void main() {
   });
 
   group('BleProfiles.known registry', () {
-    test('known contains exactly the Mares and Cressi profiles', () {
-      expect(BleProfiles.known,
-          orderedEquals([BleProfiles.maresBluelink, BleProfiles.cressiGoa]));
+    test('known contains the Shearwater, Mares and Cressi profiles', () {
+      expect(
+          BleProfiles.known,
+          orderedEquals([
+            BleProfiles.shearwaterPerdix3,
+            BleProfiles.shearwater,
+            BleProfiles.maresBluelink,
+            BleProfiles.cressiGoa,
+          ]));
+    });
+
+    test('Shearwater profile matches its advertised names', () {
+      for (final name in const [
+        'Predator',
+        'Petrel',
+        'Petrel 2',
+        'Petrel 3',
+        'Perdix',
+        'Perdix AI',
+        'Perdix 2',
+        'Teric',
+        'Peregrine',
+        'NERD',
+        'NERD 2',
+        'Tern',
+      ]) {
+        expect(BleProfiles.match(name), same(BleProfiles.shearwater),
+            reason: name);
+      }
+      expect(BleProfiles.shearwater.serviceUuid,
+          'fe25c237-0ece-443c-b0aa-e02033e7029d');
+      expect(BleProfiles.shearwater.vendorHint, 'Shearwater');
+      expect(BleProfiles.shearwater.productHint, 'Petrel 2');
+      // Characteristics + write mode left to property-based discovery.
+      expect(BleProfiles.shearwater.writeCharUuid, isNull);
+      expect(BleProfiles.shearwater.notifyCharUuid, isNull);
+      expect(BleProfiles.shearwater.writeWithResponse, isNull);
+    });
+
+    test('Perdix 3 resolves to its own profile, not the general one', () {
+      // 'Perdix' is a substring of 'Perdix 3', so shearwaterPerdix3 must be
+      // matched first — it carries the distinct Perdix 3 GATT service UUID.
+      expect(BleProfiles.match('Perdix 3'), same(BleProfiles.shearwaterPerdix3));
+      expect(BleProfiles.shearwaterPerdix3.serviceUuid,
+          '1aa44039-1667-4b29-87cc-dfecaaf31d97');
+      expect(BleProfiles.shearwaterPerdix3.vendorHint, 'Shearwater');
+      expect(BleProfiles.shearwaterPerdix3.productHint, 'Perdix 2');
     });
 
     test('Mares BlueLink profile matches its advertised names', () {
@@ -88,7 +132,7 @@ void main() {
 
     test('an unrelated device name matches nothing', () {
       expect(BleProfiles.match('Garmin Descent Mk2'), isNull);
-      expect(BleProfiles.match('Perdix AI'), isNull);
+      expect(BleProfiles.match('Suunto EON Steel'), isNull);
     });
   });
 }

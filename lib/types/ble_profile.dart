@@ -67,7 +67,74 @@ class BleProfiles {
 
   /// The profiles scanning matches against. Not `const` — [cressiGoa] holds
   /// a [RegExp], which has no const constructor.
-  static final List<BleProfile> known = [maresBluelink, cressiGoa];
+  ///
+  /// Order matters: [shearwaterPerdix3] must precede [shearwater] because
+  /// `'Perdix'` is a substring of `'Perdix 3'` and the two carry different
+  /// GATT service UUIDs.
+  static final List<BleProfile> known = [
+    shearwaterPerdix3,
+    shearwater,
+    maresBluelink,
+    cressiGoa,
+  ];
+
+  /// Shearwater BLE dive computers (`DC_FAMILY_SHEARWATER_PREDATOR` /
+  /// `DC_FAMILY_SHEARWATER_PETREL`) — Petrel 2, Perdix, Perdix AI, Perdix 2,
+  /// NERD 2, Teric, Peregrine, Petrel 3, Tern and relatives.
+  ///
+  /// The original Predator, Petrel (1) and NERD (1) are Bluetooth Classic
+  /// (RFCOMM) only; they are still listed here so a scan recognises them, but
+  /// downloading needs `ComputerTransport.bluetooth`, which is not
+  /// implemented. Every BLE Shearwater advertises with the model name as a
+  /// prefix (Subsurface `core/btdiscovery.cpp`), so a small set of substrings
+  /// covers the family.
+  ///
+  /// Service UUID is the Shearwater serial service (Subsurface
+  /// `core/qt-ble.cpp` `serial_service_uuids[]`). Perdix 3 uses a *different*
+  /// service — see [shearwaterPerdix3]. Write/notify characteristics are left
+  /// to [BleTransport]'s property-based discovery (Subsurface does the same;
+  /// there is no Shearwater-specific BLE framing in its read/write path).
+  ///
+  /// `productHint` is `Petrel 2` — the safest descriptor present in the
+  /// vendored libdivecomputer build for an unknown BLE Shearwater. The
+  /// example app's descriptor picker lets the user switch to their actual
+  /// model (Perdix AI, Teric, Peregrine, …).
+  ///
+  /// All name patterns + the UUID are reference-derived and UNVERIFIED
+  /// against hardware — if a device never shows up in a scan, widen
+  /// `namePatterns` here first.
+  static const shearwater = BleProfile(
+    namePatterns: [
+      'Predator',
+      'Petrel',
+      'Perdix',
+      'Teric',
+      'Peregrine',
+      'NERD',
+      'Tern',
+    ],
+    serviceUuid: 'fe25c237-0ece-443c-b0aa-e02033e7029d',
+    vendorHint: 'Shearwater',
+    productHint: 'Petrel 2',
+  );
+
+  /// Shearwater Perdix 3 — a separate profile because it advertises the same
+  /// `Perdix …` name prefix as the rest of the family but exposes a distinct
+  /// GATT serial service (Subsurface `core/qt-ble.cpp`). Listed before
+  /// [shearwater] in [known] so the more specific `'Perdix 3'` pattern wins.
+  ///
+  /// The vendored libdivecomputer build (0.9.0-devel) has no Perdix 3
+  /// descriptor, so a scan will recognise the device but the download can't
+  /// resolve a backend until the native library is updated. `productHint`
+  /// falls back to `Perdix 2`.
+  ///
+  /// UNVERIFIED against hardware.
+  static const shearwaterPerdix3 = BleProfile(
+    namePatterns: ['Perdix 3'],
+    serviceUuid: '1aa44039-1667-4b29-87cc-dfecaaf31d97',
+    vendorHint: 'Shearwater',
+    productHint: 'Perdix 2',
+  );
 
   /// Mares BLE dive computers (`DC_FAMILY_MARES_ICONHD`).
   ///
