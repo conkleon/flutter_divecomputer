@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:isolate';
 import 'dart:developer' as developer;
 
@@ -20,6 +21,7 @@ enum DiveComputerMethod {
   enableDebugLogging,
   supportedComputers,
   serialPorts,
+  bluetoothDevices,
   download,
 }
 
@@ -44,6 +46,7 @@ class DiveComputer implements DiveComputerInterface {
 
   Completer<List<Computer>>? _supportedComputers;
   Completer<List<String>>? _serialPorts;
+  Completer<List<BtDevice>>? _bluetoothDevices;
   Completer<List<Dive>>? _downloadedDives;
 
   /// Memoized [supportedComputers] request. Concurrent callers (the example
@@ -81,6 +84,10 @@ class DiveComputer implements DiveComputerInterface {
         if (_serialPorts?.isCompleted == false) {
           _serialPorts?.complete(message);
         }
+      } else if (message is List<BtDevice>) {
+        if (_bluetoothDevices?.isCompleted == false) {
+          _bluetoothDevices?.complete(message);
+        }
       } else if (message is List<Dive>) {
         if (_downloadedDives?.isCompleted == false) {
           _downloadedDives?.complete(message);
@@ -97,6 +104,9 @@ class DiveComputer implements DiveComputerInterface {
         }
         if (_serialPorts?.isCompleted == false) {
           _serialPorts?.completeError(message);
+        }
+        if (_bluetoothDevices?.isCompleted == false) {
+          _bluetoothDevices?.completeError(message);
         }
         if (_downloadedDives?.isCompleted == false) {
           _downloadedDives?.completeError(message);
@@ -149,8 +159,10 @@ class DiveComputer implements DiveComputerInterface {
   }
 
   @override
-  Future<List<BtDevice>> bluetoothDevices(Computer computer) {
-    throw UnimplementedError();
+  Future<List<BtDevice>> bluetoothDevices(Computer computer) async {
+    if (!Platform.isWindows) return const [];
+    await _send((DiveComputerMethod.bluetoothDevices, [computer]));
+    return (_bluetoothDevices = Completer<List<BtDevice>>()).future;
   }
 
   @override
@@ -248,6 +260,10 @@ _spawnIsolate(SendPort sendPort) {
         case DiveComputerMethod.serialPorts:
           final computer = message.$2[0] as Computer;
           sendPort.send(DiveComputerFfi.serialPorts(computer));
+          break;
+        case DiveComputerMethod.bluetoothDevices:
+          sendPort.send(
+              DiveComputerFfi.bluetoothDevices(message.$2[0] as Computer));
           break;
         case DiveComputerMethod.download:
           final computer = message.$2[0] as Computer;

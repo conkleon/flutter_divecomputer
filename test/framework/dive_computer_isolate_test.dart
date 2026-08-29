@@ -78,4 +78,19 @@ void main() {
       isTrue,
     );
   });
+
+  test('bluetoothDevices round-trips with a guarded completer', () {
+    expect(source, contains('DiveComputerMethod.bluetoothDevices'));
+    expect(
+      RegExp(r'is List<BtDevice>\)\s*\{\s*if \(_bluetoothDevices\?\.isCompleted'
+              r' == false\)\s*\{\s*_bluetoothDevices\?\.complete\(message\)')
+          .hasMatch(source),
+      isTrue,
+    );
+  });
+
+  test('_spawnIsolate handles bluetoothDevices via the FFI layer', () {
+    expect(source,
+        contains('DiveComputerFfi.bluetoothDevices(message.\$2[0] as Computer)'));
+  });
 }
