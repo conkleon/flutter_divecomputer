@@ -108,10 +108,45 @@ class _MyAppState extends State<MyApp> {
                 ),
               );
         if (picked == null) return;
-        final dives = await dc.download(computer, ComputerTransport.bluetooth,
-            'exampleFingerprint', picked.address);
-        messenger.showSnackBar(
-            SnackBar(content: Text('Downloaded ${dives.length} dives')));
+        if (!context.mounted) return;
+        // A persistent status dialog — snackbars auto-dismiss and are easy to
+        // miss, and the BT download can take a while / stall.
+        final status = ValueNotifier<String>(
+            'Connecting to ${picked.name} (${picked.address})…\n'
+            'Make sure the Petrel is on its Bluetooth screen.');
+        var dialogOpen = true;
+        showDialog<void>(
+          context: context,
+          barrierDismissible: false,
+          builder: (_) => AlertDialog(
+            title: const Text('Bluetooth download'),
+            content: ValueListenableBuilder<String>(
+              valueListenable: status,
+              builder: (_, s, __) => Text(s),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () {
+                  dialogOpen = false;
+                  Navigator.of(context).pop();
+                },
+                child: const Text('Close'),
+              ),
+            ],
+          ),
+        ).then((_) => dialogOpen = false);
+        try {
+          status.value = 'Opening connection and downloading…\n'
+              '(this can take 30–60s; the Petrel must stay on its BT screen)';
+          final dives = await dc.download(computer, ComputerTransport.bluetooth,
+              'exampleFingerprint', picked.address);
+          status.value = 'Downloaded ${dives.length} dives.';
+        } catch (e) {
+          status.value = 'Failed: $e';
+        }
+        if (dialogOpen && context.mounted) {
+          // leave the result on screen; user taps Close
+        }
         return;
       }
       if (transport == ComputerTransport.serial) {

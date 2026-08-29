@@ -41,6 +41,11 @@ class DiveComputerPlugin : FlutterPlugin, ActivityAware, MethodChannel.MethodCal
   private var pendingPermissionResult: MethodChannel.Result? = null
 
   private var eventSink: EventChannel.EventSink? = null
+  // Bytes the reader delivers before Dart subscribes to the EventChannel are
+  // buffered here (main-thread only) and flushed on onListen — otherwise a
+  // fast dive computer that speaks first loses its opening packet, desyncing
+  // the whole protocol.
+  private val earlyInbound = ArrayDeque<ByteArray>()
   private val mainHandler = Handler(Looper.getMainLooper())
 
   // Single-threaded executor: every socket-state mutation is serialized here.
@@ -158,15 +163,35 @@ class DiveComputerPlugin : FlutterPlugin, ActivityAware, MethodChannel.MethodCal
         }
         io.execute {
           closeSocketNow()
+          mainHandler.post { earlyInbound.clear() }
           val myGen = connectGen.incrementAndGet()
           try {
             val a = adapter ?: throw IllegalStateException("No Bluetooth adapter")
             // Needs BLUETOOTH_SCAN on API >= 31, which the manifest deliberately
             // does not declare. Discovery isn't running anyway -> ignore.
             try { a.cancelDiscovery() } catch (e: SecurityException) { /* no BLUETOOTH_SCAN */ }
-            val s = a.getRemoteDevice(address).createRfcommSocketToServiceRecord(SPP_UUID)
-            pendingSocket = s
-            s.connect() // blocks ~12s, throws IOException on failure
+            val device = a.getRemoteDevice(address)
+            // RFCOMM connect on Android is flaky (the first attempt often fails
+            // with EBADFD / "read failed, socket might closed" right after
+            // bonding). Retry a couple of times before giving up.
+            var s: BluetoothSocket? = null
+            var lastErr: Exception? = null
+            for (attempt in 1..3) {
+              if (connectGen.get() != myGen) break
+              val candidate = device.createRfcommSocketToServiceRecord(SPP_UUID)
+              pendingSocket = candidate
+              try {
+                candidate.connect() // blocks ~12s, throws IOException on failure
+                s = candidate
+                break
+              } catch (e: Exception) {
+                lastErr = e
+                try { candidate.close() } catch (_: Exception) {}
+                pendingSocket = null
+                Thread.sleep(600)
+              }
+            }
+            if (s == null) throw (lastErr ?: java.io.IOException("connect failed"))
             if (connectGen.get() != myGen) {
               // A disconnect() arrived during connect(): drop this socket.
               pendingSocket = null
@@ -211,8 +236,18 @@ class DiveComputerPlugin : FlutterPlugin, ActivityAware, MethodChannel.MethodCal
 
   // --- EventChannel ---
 
-  override fun onListen(arguments: Any?, events: EventChannel.EventSink?) { eventSink = events }
+  override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+    eventSink = events
+    while (earlyInbound.isNotEmpty()) events?.success(earlyInbound.removeFirst())
+  }
   override fun onCancel(arguments: Any?) { eventSink = null }
+
+  /** Deliver one inbound chunk on the main thread, buffering if Dart hasn't
+   *  subscribed yet. Caller must already be on the main thread. */
+  private fun deliverInbound(chunk: ByteArray) {
+    val sink = eventSink
+    if (sink != null) sink.success(chunk) else earlyInbound.addLast(chunk)
+  }
 
   private fun startReader(s: BluetoothSocket) {
     // Pin this reader to the connection generation it belongs to. A stale
@@ -228,7 +263,7 @@ class DiveComputerPlugin : FlutterPlugin, ActivityAware, MethodChannel.MethodCal
           if (n < 0) break
           if (n > 0) {
             val chunk = buf.copyOf(n)
-            mainHandler.post { if (connectGen.get() == myGen) eventSink?.success(chunk) }
+            mainHandler.post { if (connectGen.get() == myGen) deliverInbound(chunk) }
           }
         }
       } catch (_: Exception) {
@@ -261,5 +296,6 @@ class DiveComputerPlugin : FlutterPlugin, ActivityAware, MethodChannel.MethodCal
     pendingSocket = null
     try { socket?.close() } catch (_: Exception) {}
     socket = null
+    mainHandler.post { earlyInbound.clear() }
   }
 }

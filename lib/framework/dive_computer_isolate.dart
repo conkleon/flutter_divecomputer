@@ -171,6 +171,12 @@ class DiveComputer implements DiveComputerInterface {
     hierarchicalLoggingEnabled = true;
     forwardLoggerToDeveloperLog(bleTransportLog);
     bleTransportLog.level = Level.FINEST;
+    // The RFCOMM transport + channel also live on this isolate.
+    for (final name in const ['RfcommTransport', 'RfcommChannel']) {
+      final l = Logger(name);
+      forwardLoggerToDeveloperLog(l);
+      l.level = Level.FINEST;
+    }
     _send((DiveComputerMethod.enableDebugLogging, []));
   }
 
