@@ -23,6 +23,22 @@
   Petrel) is paired as a virtual COM port. The example app's "Serial
   computers" tab now prompts for the port. `serialPorts` results are
   deduplicated (the iterator can report the same port twice).
+* Bluetooth Classic (RFCOMM / SPP) transport — `ComputerTransport.bluetooth`
+  is now implemented for **Windows** (via libdivecomputer's own
+  `dc_bluetooth_open`, on the background isolate like the serial path) and
+  **Android** (a Kotlin `BluetoothSocket` RFCOMM channel on the main isolate
+  feeding libdivecomputer through the shared-memory isolate bridge and
+  `dc_custom_open(DC_TRANSPORT_BLUETOOTH)`). This covers the
+  Bluetooth-Classic-only Shearwaters — the original Predator, Petrel,
+  Petrel 2, NERD and Perdix. New API: `DiveComputer.bluetoothDevices()`
+  (paired/bonded devices) and `DiveComputer.requestBluetoothPermissions()`;
+  `download()`'s `serialPort` parameter is generalised to `address` (COM port
+  for serial, Bluetooth MAC for Windows bluetooth). Devices must be
+  paired/bonded in the OS first — there is no in-app pairing or discovery. On
+  Windows, a legacy device whose OS pairing fails mutual authentication will
+  still fail to open; that is an OS/hardware matter, not a plugin one. The
+  Android side's Kotlin has not yet been built/run on-device in this repo
+  (the example app's Android Gradle toolchain predates the local JDK).
 
 ## 0.0.1
 

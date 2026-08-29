@@ -42,22 +42,19 @@ vendor protocols, serial ports, or native memory — it just gets a
 - **USB/serial transport — done.** `ComputerTransport.serial` is implemented
   end-to-end (`DiveComputerFfi.download` → `_connectSerial`) and can already
   enumerate ports and download/parse dives.
-- **Bluetooth (Classic + BLE) transport — not implemented yet.** This is the
-  main gap and the main goal: most current-generation dive computers sync
-  over BLE rather than a cable. `ComputerTransport.bluetooth` and `.ble`
-  already exist in the type model (`lib/types/computer.dart`), and the
-  vendored libdivecomputer headers include `bluetooth.h`/`ble.h`
-  (`native/include/libdivecomputer/`), but:
-  - `ffigen.yaml` doesn't list those headers as entry-points yet, so no
-    Bluetooth bindings are generated into
-    `dive_computer_ffi_bindings_generated.dart`.
-  - `DiveComputerFfi.download`'s transport switch only has a `serial` case;
-    `bluetooth`/`ble` fall through to `UnimplementedError`.
-  - libdivecomputer expects the *host app* to own the Bluetooth stack and
-    feed it bytes through an `dc_custom_iostream` (or platform BLE/RFCOMM
-    APIs) — unlike serial, there's no libdivecomputer-provided cross-platform
-    transport to bind to. That plumbing (Windows BLE via WinRT, Android BLE
-    via `BluetoothGatt`) is what's missing.
+- **BLE transport — done.** `ComputerTransport.ble` works on Windows and
+  Android via `universal_ble` + a shared-memory isolate bridge into
+  libdivecomputer's `dc_custom_open`. Scanning surfaces only devices matching
+  a known `BleProfile` (`lib/types/ble_profile.dart`) — Mares, Cressi and
+  Shearwater profiles ship, derived from Subsurface and not yet all
+  hardware-verified.
+- **Bluetooth Classic (RFCOMM/SPP) transport — done for Windows + Android.**
+  `ComputerTransport.bluetooth` uses libdivecomputer's `dc_bluetooth_open` on
+  Windows and a Kotlin `BluetoothSocket` RFCOMM channel on Android (feeding
+  the same isolate bridge). Bonded/paired devices only — no in-app pairing.
+  Enables the Bluetooth-Classic-only Shearwaters (Predator, Petrel, Petrel 2,
+  NERD, Perdix). Not implemented for iOS/macOS. The Android Kotlin side is
+  code-review-verified but not yet built on-device in this repo.
 - iOS native binaries (build/bundle `libdivecomputer` for iOS) — not started,
   not currently prioritized.
 - Web — out of scope for this plugin; would need a Web Bluetooth/Web Serial
