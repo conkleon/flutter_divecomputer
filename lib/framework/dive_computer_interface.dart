@@ -17,10 +17,18 @@ abstract class DiveComputerInterface {
 
   Future<List<Computer>> get supportedComputers => throw UnimplementedError();
 
+  /// The serial ports libdivecomputer associates with [computer] (on Windows,
+  /// virtual COM ports for paired Bluetooth-Classic dive computers show up
+  /// here too). Pass the right one to [download] as `serialPort`.
+  Future<List<String>> serialPorts(Computer computer) {
+    throw UnimplementedError();
+  }
+
   Future<List<Dive>> download(
     Computer computer,
     ComputerTransport transport, [
     String? lastFingerprint,
+    String? serialPort,
   ]) {
     throw UnimplementedError();
   }

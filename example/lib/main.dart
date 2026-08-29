@@ -38,6 +38,50 @@ class _MyAppState extends State<MyApp> {
     super.dispose();
   }
 
+  /// Download from a serial/USB dive computer. For a serial transport (which
+  /// includes Bluetooth-Classic computers paired as a virtual COM port, e.g. a
+  /// Shearwater Petrel on Windows) this first asks libdivecomputer which ports
+  /// exist and lets the user pick — the plugin no longer guesses.
+  Future<void> _downloadFrom(BuildContext context, Computer computer) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final transport = computer.transports.first;
+    String? serialPort;
+    try {
+      if (transport == ComputerTransport.serial) {
+        final ports = await dc.serialPorts(computer);
+        if (ports.isEmpty) {
+          messenger.showSnackBar(const SnackBar(
+              content: Text('No serial ports found — pair the computer and '
+                  'put it on its Bluetooth/upload screen, then retry.')));
+          return;
+        }
+        if (!context.mounted) return;
+        serialPort = ports.length == 1
+            ? ports.single
+            : await showDialog<String>(
+                context: context,
+                builder: (context) => SimpleDialog(
+                  title: const Text('Which serial port is the dive computer?'),
+                  children: [
+                    for (final p in ports)
+                      SimpleDialogOption(
+                        onPressed: () => Navigator.pop(context, p),
+                        child: Text(p),
+                      ),
+                  ],
+                ),
+              );
+        if (serialPort == null) return; // dialog dismissed
+      }
+      final dives = await dc.download(
+          computer, transport, 'exampleFingerprint', serialPort);
+      messenger.showSnackBar(
+          SnackBar(content: Text('Downloaded ${dives.length} dives')));
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text('Download failed: $e')));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
@@ -79,23 +123,10 @@ class _MyAppState extends State<MyApp> {
                               itemCount: computers.length,
                               itemBuilder: (context, index) {
                                 final computer = computers[index];
-                                return GestureDetector(
-                                  onTap: () async {
-                                    final dives = await dc.download(
-                                      computer,
-                                      computer.transports.first,
-                                      "exampleFingerprint",
-                                    );
-                                    // ignore: use_build_context_synchronously
-                                    ScaffoldMessenger.of(context)
-                                        .showSnackBar(
-                                      SnackBar(
-                                        content: Text(
-                                            'Downloaded ${dives.length} dives'),
-                                      ),
-                                    );
-                                  },
-                                  child: Text(computer.toString()),
+                                return ListTile(
+                                  dense: true,
+                                  title: Text(computer.toString()),
+                                  onTap: () => _downloadFrom(context, computer),
                                 );
                               },
                             );

@@ -18,6 +18,7 @@ enum DiveComputerMethod {
   closeConnection,
   enableDebugLogging,
   supportedComputers,
+  serialPorts,
   download,
 }
 
@@ -41,6 +42,7 @@ class DiveComputer implements DiveComputerInterface {
   static DiveComputer get instance => _instance ??= DiveComputer._();
 
   Completer<List<Computer>>? _supportedComputers;
+  Completer<List<String>>? _serialPorts;
   Completer<List<Dive>>? _downloadedDives;
 
   /// Memoized [supportedComputers] request. Concurrent callers (the example
@@ -74,6 +76,10 @@ class DiveComputer implements DiveComputerInterface {
         if (_supportedComputers?.isCompleted == false) {
           _supportedComputers?.complete(message);
         }
+      } else if (message is List<String>) {
+        if (_serialPorts?.isCompleted == false) {
+          _serialPorts?.complete(message);
+        }
       } else if (message is List<Dive>) {
         if (_downloadedDives?.isCompleted == false) {
           _downloadedDives?.complete(message);
@@ -87,6 +93,9 @@ class DiveComputer implements DiveComputerInterface {
       } else if (message is Error || message is Exception) {
         if (_supportedComputers?.isCompleted == false) {
           _supportedComputers?.completeError(message);
+        }
+        if (_serialPorts?.isCompleted == false) {
+          _serialPorts?.completeError(message);
         }
         if (_downloadedDives?.isCompleted == false) {
           _downloadedDives?.completeError(message);
@@ -133,6 +142,12 @@ class DiveComputer implements DiveComputerInterface {
   }
 
   @override
+  Future<List<String>> serialPorts(Computer computer) async {
+    await _send((DiveComputerMethod.serialPorts, [computer]));
+    return (_serialPorts = Completer<List<String>>()).future;
+  }
+
+  @override
   Stream<BleScanResult> scanForBleDevices() => _bleTransport.scanForDevices();
 
   @override
@@ -147,6 +162,7 @@ class DiveComputer implements DiveComputerInterface {
     Computer computer,
     ComputerTransport transport, [
     String? lastFingerprint,
+    String? serialPort,
   ]) async {
     BleBridge? bridge;
     // Allocate/attach/send are grouped so that any failure before the send is
@@ -167,7 +183,7 @@ class DiveComputer implements DiveComputerInterface {
       }
       await _send((
         DiveComputerMethod.download,
-        [computer, transport, lastFingerprint, bridge?.address],
+        [computer, transport, lastFingerprint, bridge?.address, serialPort],
       ));
     } catch (_) {
       if (bridge != null) {
@@ -220,17 +236,22 @@ _spawnIsolate(SendPort sendPort) {
           final computers = DiveComputerFfi.supportedComputers;
           sendPort.send(computers);
           break;
+        case DiveComputerMethod.serialPorts:
+          final computer = message.$2[0] as Computer;
+          sendPort.send(DiveComputerFfi.serialPorts(computer));
+          break;
         case DiveComputerMethod.download:
           final computer = message.$2[0] as Computer;
           final transport = message.$2[1] as ComputerTransport;
           final lastFingerprint = message.$2[2] as String?;
           final bleBridgeAddress = message.$2[3] as int?;
+          final serialPortName = message.$2[4] as String?;
           DiveComputerFfi.divesCallback = (dives) {
             sendPort.send(dives);
           };
           try {
-            DiveComputerFfi.download(
-                computer, transport, lastFingerprint, bleBridgeAddress);
+            DiveComputerFfi.download(computer, transport, lastFingerprint,
+                bleBridgeAddress, serialPortName);
           } finally {
             if (bleBridgeAddress != null) {
               sendPort.send(_BleBridgeReleased(bleBridgeAddress));

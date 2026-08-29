@@ -29,6 +29,36 @@ void main() {
     expect(close, contains('_supportedComputersRequest = null'));
   });
 
+  test('serialPorts round-trips through the isolate with a guarded completer',
+      () {
+    expect(source, contains('DiveComputerMethod.serialPorts'));
+    expect(
+      RegExp(r'is List<String>\)\s*\{\s*if \(_serialPorts\?\.isCompleted == '
+              r'false\)\s*\{\s*_serialPorts\?\.complete\(message\)')
+          .hasMatch(source),
+      isTrue,
+      reason: 'A duplicate serialPorts reply must not complete() an '
+          'already-completed completer.',
+    );
+  });
+
+  test('download forwards the chosen serial port to the background isolate', () {
+    // Main isolate puts it in the message...
+    expect(
+      source.contains(
+          '[computer, transport, lastFingerprint, bridge?.address, serialPort]'),
+      isTrue,
+    );
+    // ...and the background isolate reads it back and hands it to the FFI.
+    expect(source, contains('final serialPortName = message.\$2[4] as String?'));
+    expect(
+      RegExp(r'DiveComputerFfi\.download\(computer, transport, lastFingerprint,'
+              r'\s*bleBridgeAddress, serialPortName\)')
+          .hasMatch(source),
+      isTrue,
+    );
+  });
+
   test('the List<Computer>/List<Dive> replies guard against double-complete',
       () {
     expect(

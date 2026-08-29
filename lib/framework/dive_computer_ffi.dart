@@ -5,6 +5,7 @@ import 'dart:developer' as developer;
 
 import 'package:dive_computer/framework/ble/ble_bridge_callbacks.dart';
 import 'package:dive_computer/framework/ble/ble_bridge_state.dart';
+import 'package:dive_computer/framework/utils/serial_ports.dart';
 import 'package:dive_computer/framework/utils/transports_bitmask.dart';
 import 'package:dive_computer/types/computer.dart';
 import 'package:dive_computer/types/dive.dart';
@@ -164,18 +165,32 @@ class DiveComputerFfi {
     return _computerDescriptorCache.keys.toList();
   }
 
+  /// The serial ports libdivecomputer enumerates for [computer]'s descriptor,
+  /// deduplicated. On Windows this includes virtual COM ports for paired
+  /// Bluetooth-Classic dive computers (e.g. a Shearwater Petrel). The caller
+  /// passes the chosen one back to [download] as `serialPortName`.
+  static List<String> serialPorts(Computer computer) {
+    final descriptor = _computerDescriptorCache[computer];
+    if (descriptor == null) {
+      throw ArgumentError(
+          'Unknown computer $computer — call supportedComputers first');
+    }
+    return _enumerateSerialPorts(descriptor);
+  }
+
   static void download(
     Computer computer,
     ComputerTransport transport, [
     String? lastFingerprint,
     int? bleBridgeAddress,
+    String? serialPortName,
   ]) {
     final computerDescriptor = _computerDescriptorCache[computer]!;
 
     final ffi.Pointer<dc_iostream_t> iostream;
     switch (transport) {
       case ComputerTransport.serial:
-        iostream = _connectSerial(computerDescriptor);
+        iostream = _connectSerial(computerDescriptor, serialPortName);
         break;
       case ComputerTransport.ble:
         if (bleBridgeAddress == null) {
@@ -267,16 +282,19 @@ class DiveComputerFfi {
     return iostream.value;
   }
 
-  static ffi.Pointer<dc_iostream_t> _connectSerial(
-      ffi.Pointer<dc_descriptor_t> computer) {
+  /// Enumerates the serial ports libdivecomputer associates with [descriptor],
+  /// deduplicated and in first-seen order. The iterator can yield the same
+  /// COM port twice and in a non-deterministic order between calls.
+  static List<String> _enumerateSerialPorts(
+      ffi.Pointer<dc_descriptor_t> descriptor) {
     final iterator = calloc<ffi.Pointer<dc_iterator_t>>();
 
     _handleResult(
-      _bindings.dc_serial_iterator_new(iterator, context.value, computer),
-      'serial connection',
+      _bindings.dc_serial_iterator_new(iterator, context.value, descriptor),
+      'serial iterator creation',
     );
 
-    final names = <ffi.Pointer<Utf8>>[];
+    final names = <String>[];
 
     int result;
     final desc = calloc<ffi.Pointer<dc_serial_device_t>>();
@@ -284,35 +302,53 @@ class DiveComputerFfi {
         dc_status_t.DC_STATUS_SUCCESS) {
       final ffi.Pointer<Utf8> name =
           _bindings.dc_serial_device_get_name(desc.value).cast();
-      names.add(name);
+      names.add(name.toDartString());
 
       _bindings.dc_serial_device_free(desc.value);
     }
     _handleResult(result, 'iterator next');
-    log.info(
-      'Serial devices: ${names.map((e) => e.toDartString()).join(', ')}',
-    );
 
     _handleResult(
       _bindings.dc_iterator_free(iterator.value),
       'iterator freeing',
     );
+    calloc.free(desc);
+    calloc.free(iterator);
+
+    return dedupeSerialPorts(names);
+  }
+
+  static ffi.Pointer<dc_iostream_t> _connectSerial(
+      ffi.Pointer<dc_descriptor_t> computer,
+      [String? serialPortName]) {
+    final names = _enumerateSerialPorts(computer);
+    log.info('Serial devices: ${names.join(', ')}');
 
     if (names.isEmpty) {
       _handleResult(dc_status_t.DC_STATUS_NODEVICE);
     }
 
+    // Pick the caller's port, or the first enumerated one when unspecified.
+    // A non-null serialPortName that isn't in the list throws ArgumentError.
+    final chosen = selectSerialPort(names, requested: serialPortName);
+    log.info('Opening serial port: $chosen');
+
     // ### Connecting to the device ### //
     final iostream = calloc<ffi.Pointer<dc_iostream_t>>();
+    final chosenNative = chosen.toNativeUtf8();
 
-    _handleResult(
-      _bindings.dc_serial_open(
-        iostream,
-        context.value,
-        names[0].cast(),
-      ),
-      'serial open',
-    );
+    try {
+      _handleResult(
+        _bindings.dc_serial_open(
+          iostream,
+          context.value,
+          chosenNative.cast(),
+        ),
+        'serial open',
+      );
+    } finally {
+      calloc.free(chosenNative);
+    }
 
     return iostream.value;
   }
