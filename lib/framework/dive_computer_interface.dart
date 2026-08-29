@@ -46,6 +46,10 @@ abstract class DiveComputerInterface {
     ComputerTransport transport, [
     String? lastFingerprint,
     String? address, // COM port for serial; BT MAC for Windows bluetooth
+    // Called once per dive as it is parsed, before the returned future
+    // completes. Persist each dive here so a mid-transfer disconnect still
+    // leaves every parsed dive delivered.
+    void Function(Dive dive)? onDive,
   ]) {
     throw UnimplementedError();
   }

@@ -51,6 +51,10 @@ class DiveComputer implements DiveComputerInterface {
   Completer<List<BtDevice>>? _bluetoothDevices;
   Completer<List<Dive>>? _downloadedDives;
 
+  /// Set for the duration of a [download] call; invoked once per dive as the
+  /// background isolate parses and streams it across.
+  void Function(Dive)? _onDive;
+
   /// Memoized [supportedComputers] request. Concurrent callers (the example
   /// app now has two: `_MyAppState` and `_BleDebugScreenState`) share one
   /// future and one isolate round-trip; without this the second call clobbers
@@ -93,6 +97,9 @@ class DiveComputer implements DiveComputerInterface {
         if (_bluetoothDevices?.isCompleted == false) {
           _bluetoothDevices?.complete(message);
         }
+      } else if (message is Dive) {
+        // A single dive streamed mid-download (before the final List<Dive>).
+        _onDive?.call(message);
       } else if (message is List<Dive>) {
         if (_downloadedDives?.isCompleted == false) {
           _downloadedDives?.complete(message);
@@ -226,7 +233,9 @@ class DiveComputer implements DiveComputerInterface {
     ComputerTransport transport, [
     String? lastFingerprint,
     String? address,
+    void Function(Dive dive)? onDive,
   ]) async {
+    _onDive = onDive;
     BleBridge? bridge;
     // Allocate/attach/send are grouped so that any failure before the send is
     // confirmed disposes the bridge and rethrows WITHOUT entering the
@@ -270,11 +279,13 @@ class DiveComputer implements DiveComputerInterface {
         bridge = null;
       }
       _bleBridgeReleased = null;
+      _onDive = null;
       rethrow;
     }
     try {
       return await (_downloadedDives = Completer()).future;
     } finally {
+      _onDive = null;
       if (bridge != null) {
         // The _BleBridgeReleased handshake guarantees the FFI isolate is done
         // with the bridge. Bounded so a lost handshake can't hang download()
@@ -351,10 +362,14 @@ _spawnIsolate(SendPort sendPort) {
           DiveComputerFfi.divesCallback = (dives) {
             sendPort.send(dives);
           };
+          DiveComputerFfi.diveCallback = (dive) {
+            sendPort.send(dive);
+          };
           try {
             DiveComputerFfi.download(computer, transport, lastFingerprint,
                 bleBridgeAddress, address);
           } finally {
+            DiveComputerFfi.diveCallback = null;
             if (bleBridgeAddress != null) {
               sendPort.send(_BleBridgeReleased(bleBridgeAddress));
             }

@@ -83,6 +83,11 @@ class DiveComputerFfi {
 
   static Function(List<Dive>)? divesCallback;
 
+  /// Called once per dive as it is parsed, before [divesCallback] fires with
+  /// the full list. Set by the background isolate to stream dives across to
+  /// the main isolate incrementally.
+  static Function(Dive)? diveCallback;
+
   /// One switch for every logger owned by this isolate — the FFI layer and
   /// the BLE bridge callbacks.
   static void enableDebugLogging([logging.Level level = logging.Level.INFO]) {
@@ -563,6 +568,10 @@ class DiveComputerFfi {
     );
     log.info(dive);
     _divesCache.add(dive);
+    // Emit each dive the moment it is parsed, so a caller can persist it
+    // incrementally — a mid-download disconnect then still leaves every dive
+    // parsed so far delivered, instead of losing the whole transfer.
+    diveCallback?.call(dive);
 
     _handleResult(_bindings.dc_parser_destroy(parser.value));
   }

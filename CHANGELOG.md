@@ -1,5 +1,12 @@
 ## Unreleased
 
+* `download()` now takes an optional `onDive` callback, fired once per dive
+  the moment it is parsed — persist each dive as it arrives so a mid-transfer
+  disconnect leaves every downloaded dive delivered instead of losing the
+  whole run. Added `toJson()` to `Dive` / `Sample` / `Gasmix` / `Tank` /
+  `Salinity` / `PPO2` / `Deco` / `Vendor` / `Event` / `Pressure`. The example
+  streams each dive to a `petrel_dives.jsonl` file and offers to share it.
+
 * Repurposed this fork of DiveNote/dive_computer as the dive-computer sync
   bridge for the Petousis/Nautilus Dive Log app; README rewritten to reflect
   that purpose, current platform support, and the Bluetooth/BLE transport

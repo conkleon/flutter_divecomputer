@@ -1,7 +1,11 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:dive_computer/dive_computer.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:universal_ble/universal_ble.dart';
 
 import 'ble_download_support.dart';
@@ -135,14 +139,62 @@ class _MyAppState extends State<MyApp> {
             ],
           ),
         ).then((_) => dialogOpen = false);
+        // Stream each parsed dive straight to a file, one JSON object per line
+        // (JSONL). A mid-transfer disconnect then still leaves every dive so
+        // far on disk instead of losing the whole run.
+        final dir = await getExternalStorageDirectory() ??
+            await getApplicationDocumentsDirectory();
+        final outFile = File('${dir.path}/petrel_dives.jsonl');
+        await outFile.writeAsString(''); // truncate
+        var count = 0;
+        var lastDrained = DateTime.now();
+        final pending = StringBuffer();
         try {
-          status.value = 'Opening connection and downloading…\n'
-              '(this can take 30–60s; the Petrel must stay on its BT screen)';
-          final dives = await dc.download(computer, ComputerTransport.bluetooth,
-              'exampleFingerprint', picked.address);
-          status.value = 'Downloaded ${dives.length} dives.';
+          status.value = 'Opening connection…\n'
+              'Keep the Petrel on its Bluetooth screen and the screen on.';
+          final dives = await dc.download(
+            computer,
+            ComputerTransport.bluetooth,
+            'exampleFingerprint',
+            picked.address,
+            (dive) {
+              count++;
+              pending.writeln(jsonEncode(dive.toJson()));
+              // Flush every ~2s or every 20 dives — cheap, and bounds loss.
+              final now = DateTime.now();
+              if (count % 20 == 0 ||
+                  now.difference(lastDrained) > const Duration(seconds: 2)) {
+                outFile.writeAsStringSync(pending.toString(),
+                    mode: FileMode.append);
+                pending.clear();
+                lastDrained = now;
+              }
+              status.value = 'Downloading… $count dives saved\n'
+                  'latest: ${dive.dateTime ?? dive.hash}\n'
+                  '→ ${outFile.path}';
+            },
+          );
+          if (pending.isNotEmpty) {
+            outFile.writeAsStringSync(pending.toString(), mode: FileMode.append);
+          }
+          status.value = 'Done — ${dives.length} dives.\n'
+              'Saved to:\n${outFile.path}';
         } catch (e) {
-          status.value = 'Failed: $e';
+          if (pending.isNotEmpty) {
+            outFile.writeAsStringSync(pending.toString(), mode: FileMode.append);
+          }
+          status.value = 'Stopped after $count dives: $e\n'
+              'The $count dives already downloaded are saved to:\n'
+              '${outFile.path}\n'
+              'Re-run to try again (it starts over — no resume yet).';
+        }
+        // Offer to share the file regardless of success/failure.
+        if (await outFile.exists() && await outFile.length() > 0) {
+          try {
+            await SharePlus.instance.share(
+              ShareParams(files: [XFile(outFile.path)], text: 'Petrel dive log'),
+            );
+          } catch (_) {/* sharing is best-effort */}
         }
         if (dialogOpen && context.mounted) {
           // leave the result on screen; user taps Close

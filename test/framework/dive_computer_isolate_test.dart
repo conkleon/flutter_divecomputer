@@ -108,4 +108,23 @@ void main() {
       isTrue,
     );
   });
+
+  test('per-dive stream: onDive param, guarded field, Dive message branch, '
+      'diveCallback set+cleared in the isolate', () {
+    // download() accepts the onDive callback and stashes it.
+    expect(source, contains('void Function(Dive dive)? onDive'));
+    expect(source, contains('_onDive = onDive'));
+    // a stray single-Dive reply invokes it (no completer to double-complete).
+    expect(
+      RegExp(r'is Dive\)\s*\{\s*//[^\n]*\n\s*_onDive\?\.call\(message\)')
+          .hasMatch(source),
+      isTrue,
+    );
+    // _onDive is cleared on both exit paths so it can't leak to the next call.
+    expect('_onDive = null'.allMatches(source).length, greaterThanOrEqualTo(2));
+    // the background isolate sets diveCallback -> sendPort.send(dive) and
+    // clears it in the finally.
+    expect(source, contains('DiveComputerFfi.diveCallback = (dive) {'));
+    expect(source, contains('DiveComputerFfi.diveCallback = null;'));
+  });
 }
