@@ -12,6 +12,7 @@ headers:
     - 'native/include/libdivecomputer/parser.h'
     - 'native/include/libdivecomputer/custom.h'
     - 'native/include/libdivecomputer/ble.h'
+    - 'native/include/libdivecomputer/bluetooth.h'
 compiler-opts:
   - '-Inative/include'
 preamble: |
