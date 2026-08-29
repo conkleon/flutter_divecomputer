@@ -19,7 +19,10 @@ import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.PluginRegistry
 import java.util.UUID
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.atomic.AtomicInteger
 
 private val SPP_UUID: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
 private const val METHOD_CHANNEL = "app.divenote.dive_computer/rfcomm"
@@ -34,14 +37,26 @@ class DiveComputerPlugin : FlutterPlugin, ActivityAware, MethodChannel.MethodCal
   private lateinit var eventChannel: EventChannel
 
   private var activity: Activity? = null
+  private var activityBinding: ActivityPluginBinding? = null
   private var pendingPermissionResult: MethodChannel.Result? = null
 
   private var eventSink: EventChannel.EventSink? = null
   private val mainHandler = Handler(Looper.getMainLooper())
-  private val io = Executors.newSingleThreadExecutor()
 
-  private var socket: BluetoothSocket? = null
-  private var readerThread: Thread? = null
+  // Single-threaded executor: every socket-state mutation is serialized here.
+  // `var` so it can be recreated after onDetachedFromEngine shuts it down
+  // (add-to-app / restart can re-attach a new engine to this same instance).
+  private var io: ExecutorService = Executors.newSingleThreadExecutor()
+
+  // Mutated on `io`, read on the main thread (`write`) -> must be @Volatile.
+  @Volatile private var socket: BluetoothSocket? = null
+  @Volatile private var readerThread: Thread? = null
+  // The socket currently inside a blocking connect(). Closed directly (from any
+  // thread) by closeSocket() to abort an in-flight connect.
+  @Volatile private var pendingSocket: BluetoothSocket? = null
+  // Bumped by every closeSocket(); an in-flight connect that sees its captured
+  // value change must drop the socket instead of adopting it.
+  private val connectGen = AtomicInteger(0)
 
   private val adapter: BluetoothAdapter?
     get() = (appContext.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
@@ -50,6 +65,7 @@ class DiveComputerPlugin : FlutterPlugin, ActivityAware, MethodChannel.MethodCal
 
   override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
     appContext = binding.applicationContext
+    if (io.isShutdown) io = Executors.newSingleThreadExecutor()
     methodChannel = MethodChannel(binding.binaryMessenger, METHOD_CHANNEL)
     methodChannel.setMethodCallHandler(this)
     eventChannel = EventChannel(binding.binaryMessenger, EVENT_CHANNEL)
@@ -60,19 +76,27 @@ class DiveComputerPlugin : FlutterPlugin, ActivityAware, MethodChannel.MethodCal
     methodChannel.setMethodCallHandler(null)
     eventChannel.setStreamHandler(null)
     closeSocket()
-    io.shutdownNow()
+    // shutdown() (not shutdownNow()) lets the closeSocket() task above run.
+    io.shutdown()
   }
 
   // --- ActivityAware ---
 
   override fun onAttachedToActivity(binding: ActivityPluginBinding) {
+    activityBinding = binding
     activity = binding.activity
     binding.addRequestPermissionsResultListener(this)
   }
   override fun onReattachedToActivityForConfigChanges(binding: ActivityPluginBinding) =
       onAttachedToActivity(binding)
-  override fun onDetachedFromActivityForConfigChanges() { activity = null }
-  override fun onDetachedFromActivity() { activity = null }
+  override fun onDetachedFromActivityForConfigChanges() = detachActivity()
+  override fun onDetachedFromActivity() = detachActivity()
+
+  private fun detachActivity() {
+    activityBinding?.removeRequestPermissionsResultListener(this)
+    activityBinding = null
+    activity = null
+  }
 
   // --- permissions ---
 
@@ -102,6 +126,12 @@ class DiveComputerPlugin : FlutterPlugin, ActivityAware, MethodChannel.MethodCal
         }
         val act = activity
         if (act == null) { result.success(false); return }
+        if (pendingPermissionResult != null) {
+          result.error(
+              "permission_request_pending",
+              "a permission request is already in progress", null)
+          return
+        }
         pendingPermissionResult = result
         ActivityCompat.requestPermissions(
             act, arrayOf(Manifest.permission.BLUETOOTH_CONNECT), PERM_REQUEST_CODE)
@@ -124,17 +154,32 @@ class DiveComputerPlugin : FlutterPlugin, ActivityAware, MethodChannel.MethodCal
           result.error("permission_denied", "BLUETOOTH_CONNECT not granted", null); return
         }
         io.execute {
+          closeSocketNow()
+          val myGen = connectGen.incrementAndGet()
           try {
-            closeSocket()
             val a = adapter ?: throw IllegalStateException("No Bluetooth adapter")
-            a.cancelDiscovery()
+            // Needs BLUETOOTH_SCAN on API >= 31, which the manifest deliberately
+            // does not declare. Discovery isn't running anyway -> ignore.
+            try { a.cancelDiscovery() } catch (e: SecurityException) { /* no BLUETOOTH_SCAN */ }
             val s = a.getRemoteDevice(address).createRfcommSocketToServiceRecord(SPP_UUID)
+            pendingSocket = s
             s.connect() // blocks ~12s, throws IOException on failure
+            if (connectGen.get() != myGen) {
+              // A disconnect() arrived during connect(): drop this socket.
+              pendingSocket = null
+              try { s.close() } catch (_: Exception) {}
+              mainHandler.post {
+                result.error("connect_failed", "disconnected during connect", null)
+              }
+              return@execute
+            }
+            pendingSocket = null
             socket = s
             startReader(s)
             mainHandler.post { result.success(null) }
           } catch (e: Exception) {
-            closeSocket()
+            pendingSocket = null
+            closeSocketNow()
             mainHandler.post { result.error("connect_failed", e.message, null) }
           }
         }
@@ -188,9 +233,24 @@ class DiveComputerPlugin : FlutterPlugin, ActivityAware, MethodChannel.MethodCal
     t.start()
   }
 
+  /**
+   * Aborts any in-flight connect immediately (BluetoothSocket.close() is safe
+   * from another thread and unblocks a blocking connect()), invalidates the
+   * current connect generation, then serializes the rest of the teardown on
+   * the `io` thread.
+   */
   private fun closeSocket() {
+    try { pendingSocket?.close() } catch (_: Exception) {}
+    connectGen.incrementAndGet()
+    try { io.execute { closeSocketNow() } } catch (_: RejectedExecutionException) {}
+  }
+
+  /** Full socket-state teardown. Must run on the `io` thread. */
+  private fun closeSocketNow() {
     readerThread?.interrupt()
     readerThread = null
+    try { pendingSocket?.close() } catch (_: Exception) {}
+    pendingSocket = null
     try { socket?.close() } catch (_: Exception) {}
     socket = null
   }
