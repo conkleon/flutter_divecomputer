@@ -59,6 +59,9 @@ final class BleBridgeState extends ffi.Struct {
   external int timeoutMs;
 }
 
+/// Shared native-memory byte pipe between the main isolate and the background
+/// isolate. Despite the `Ble` name it is transport-neutral: the BLE transport
+/// and the Android RFCOMM transport (`lib/framework/rfcomm/`) both use it.
 class BleBridge {
   BleBridge._(this.pointer);
 

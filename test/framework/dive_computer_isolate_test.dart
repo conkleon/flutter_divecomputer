@@ -46,14 +46,14 @@ void main() {
     // Main isolate puts it in the message...
     expect(
       source.contains(
-          '[computer, transport, lastFingerprint, bridge?.address, serialPort]'),
+          '[computer, transport, lastFingerprint, bridge?.address, address]'),
       isTrue,
     );
     // ...and the background isolate reads it back and hands it to the FFI.
-    expect(source, contains('final serialPortName = message.\$2[4] as String?'));
+    expect(source, contains('final address = message.\$2[4] as String?'));
     expect(
       RegExp(r'DiveComputerFfi\.download\(computer, transport, lastFingerprint,'
-              r'\s*bleBridgeAddress, serialPortName\)')
+              r'\s*bleBridgeAddress, address\)')
           .hasMatch(source),
       isTrue,
     );

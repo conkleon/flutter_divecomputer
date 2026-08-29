@@ -8,6 +8,7 @@ import 'package:dive_computer/framework/ble/ble_bridge_state.dart';
 import 'package:dive_computer/framework/ble/ble_central.dart';
 import 'package:dive_computer/framework/ble/ble_transport.dart';
 import 'package:dive_computer/types/ble_scan_result.dart';
+import 'package:dive_computer/types/bt_device.dart';
 import 'package:dive_computer/types/computer.dart';
 import 'package:dive_computer/types/dive.dart';
 import 'package:flutter/foundation.dart';
@@ -148,6 +149,14 @@ class DiveComputer implements DiveComputerInterface {
   }
 
   @override
+  Future<List<BtDevice>> bluetoothDevices(Computer computer) {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<bool> requestBluetoothPermissions() async => true;
+
+  @override
   Stream<BleScanResult> scanForBleDevices() => _bleTransport.scanForDevices();
 
   @override
@@ -162,7 +171,7 @@ class DiveComputer implements DiveComputerInterface {
     Computer computer,
     ComputerTransport transport, [
     String? lastFingerprint,
-    String? serialPort,
+    String? address,
   ]) async {
     BleBridge? bridge;
     // Allocate/attach/send are grouped so that any failure before the send is
@@ -183,7 +192,7 @@ class DiveComputer implements DiveComputerInterface {
       }
       await _send((
         DiveComputerMethod.download,
-        [computer, transport, lastFingerprint, bridge?.address, serialPort],
+        [computer, transport, lastFingerprint, bridge?.address, address],
       ));
     } catch (_) {
       if (bridge != null) {
@@ -245,13 +254,13 @@ _spawnIsolate(SendPort sendPort) {
           final transport = message.$2[1] as ComputerTransport;
           final lastFingerprint = message.$2[2] as String?;
           final bleBridgeAddress = message.$2[3] as int?;
-          final serialPortName = message.$2[4] as String?;
+          final address = message.$2[4] as String?;
           DiveComputerFfi.divesCallback = (dives) {
             sendPort.send(dives);
           };
           try {
             DiveComputerFfi.download(computer, transport, lastFingerprint,
-                bleBridgeAddress, serialPortName);
+                bleBridgeAddress, address);
           } finally {
             if (bleBridgeAddress != null) {
               sendPort.send(_BleBridgeReleased(bleBridgeAddress));

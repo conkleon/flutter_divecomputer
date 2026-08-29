@@ -168,7 +168,7 @@ class DiveComputerFfi {
   /// The serial ports libdivecomputer enumerates for [computer]'s descriptor,
   /// deduplicated. On Windows this includes virtual COM ports for paired
   /// Bluetooth-Classic dive computers (e.g. a Shearwater Petrel). The caller
-  /// passes the chosen one back to [download] as `serialPortName`.
+  /// passes the chosen one back to [download] as `address`.
   static List<String> serialPorts(Computer computer) {
     final descriptor = _computerDescriptorCache[computer];
     if (descriptor == null) {
@@ -183,14 +183,14 @@ class DiveComputerFfi {
     ComputerTransport transport, [
     String? lastFingerprint,
     int? bleBridgeAddress,
-    String? serialPortName,
+    String? address,
   ]) {
     final computerDescriptor = _computerDescriptorCache[computer]!;
 
     final ffi.Pointer<dc_iostream_t> iostream;
     switch (transport) {
       case ComputerTransport.serial:
-        iostream = _connectSerial(computerDescriptor, serialPortName);
+        iostream = _connectSerial(computerDescriptor, address);
         break;
       case ComputerTransport.ble:
         if (bleBridgeAddress == null) {
