@@ -30,7 +30,8 @@ class _MyAppState extends State<MyApp> {
   void initState() {
     super.initState();
 
-    dc.enableDebugLogging();
+    // dc.enableDebugLogging();  // FINEST logs every sample — kills throughput
+    //                              on a big transfer. Uncomment to debug.
     dc.openConnection();
 
     supportedComputers = dc.supportedComputers;
@@ -145,17 +146,31 @@ class _MyAppState extends State<MyApp> {
         final dir = await getExternalStorageDirectory() ??
             await getApplicationDocumentsDirectory();
         final outFile = File('${dir.path}/petrel_dives.jsonl');
-        await outFile.writeAsString(''); // truncate
-        var count = 0;
+        // Resume-ish: keep what's already in the file, tell the plugin which
+        // dive hashes we have so it skips re-parsing them, and only append
+        // the new ones.
+        final known = <String>{};
+        if (await outFile.exists()) {
+          for (final line in await outFile.readAsLines()) {
+            if (line.trim().isEmpty) continue;
+            try {
+              known.add(jsonDecode(line)['hash'] as String);
+            } catch (_) {/* partial trailing line */}
+          }
+        }
+        var count = known.length;
+        final startCount = count;
         var lastDrained = DateTime.now();
         final pending = StringBuffer();
         try {
-          status.value = 'Opening connection…\n'
-              'Keep the Petrel on its Bluetooth screen and the screen on.';
+          status.value = known.isEmpty
+              ? 'Opening connection…\nKeep the Petrel on its BT screen, screen on.'
+              : 'Resuming — ${known.length} dives already saved.\n'
+                  'Opening connection…';
           final dives = await dc.download(
             computer,
             ComputerTransport.bluetooth,
-            'exampleFingerprint',
+            null, // no lastFingerprint — we want the whole log
             picked.address,
             (dive) {
               count++;
@@ -173,20 +188,22 @@ class _MyAppState extends State<MyApp> {
                   'latest: ${dive.dateTime ?? dive.hash}\n'
                   '→ ${outFile.path}';
             },
+            known, // knownFingerprints — skip re-parsing these
           );
           if (pending.isNotEmpty) {
             outFile.writeAsStringSync(pending.toString(), mode: FileMode.append);
           }
-          status.value = 'Done — ${dives.length} dives.\n'
+          status.value = 'Done — $count dives total '
+              '(${count - startCount} new this run, ${dives.length} parsed).\n'
               'Saved to:\n${outFile.path}';
         } catch (e) {
           if (pending.isNotEmpty) {
             outFile.writeAsStringSync(pending.toString(), mode: FileMode.append);
           }
-          status.value = 'Stopped after $count dives: $e\n'
-              'The $count dives already downloaded are saved to:\n'
-              '${outFile.path}\n'
-              'Re-run to try again (it starts over — no resume yet).';
+          status.value = 'Stopped at $count dives '
+              '(${count - startCount} new this run): $e\n'
+              'Saved to:\n${outFile.path}\n'
+              'Re-run — it skips the dives already saved and continues.';
         }
         // Offer to share the file regardless of success/failure.
         if (await outFile.exists() && await outFile.length() > 0) {

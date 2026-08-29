@@ -234,6 +234,7 @@ class DiveComputer implements DiveComputerInterface {
     String? lastFingerprint,
     String? address,
     void Function(Dive dive)? onDive,
+    Iterable<String>? knownFingerprints,
   ]) async {
     _onDive = onDive;
     BleBridge? bridge;
@@ -264,7 +265,14 @@ class DiveComputer implements DiveComputerInterface {
       }
       await _send((
         DiveComputerMethod.download,
-        [computer, transport, lastFingerprint, bridge?.address, address],
+        [
+          computer,
+          transport,
+          lastFingerprint,
+          bridge?.address,
+          address,
+          knownFingerprints?.toList(growable: false),
+        ],
       ));
     } catch (_) {
       // Tear the transport down BEFORE freeing the bridge: disconnect() writes
@@ -359,17 +367,20 @@ _spawnIsolate(SendPort sendPort) {
           final lastFingerprint = message.$2[2] as String?;
           final bleBridgeAddress = message.$2[3] as int?;
           final address = message.$2[4] as String?;
+          final knownFingerprints = (message.$2[5] as List?)?.cast<String>();
           DiveComputerFfi.divesCallback = (dives) {
             sendPort.send(dives);
           };
           DiveComputerFfi.diveCallback = (dive) {
             sendPort.send(dive);
           };
+          DiveComputerFfi.skipFingerprints = knownFingerprints?.toSet() ?? {};
           try {
             DiveComputerFfi.download(computer, transport, lastFingerprint,
                 bleBridgeAddress, address);
           } finally {
             DiveComputerFfi.diveCallback = null;
+            DiveComputerFfi.skipFingerprints = {};
             if (bleBridgeAddress != null) {
               sendPort.send(_BleBridgeReleased(bleBridgeAddress));
             }

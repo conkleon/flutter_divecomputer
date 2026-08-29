@@ -88,6 +88,10 @@ class DiveComputerFfi {
   /// the main isolate incrementally.
   static Function(Dive)? diveCallback;
 
+  /// Fingerprints (dive hashes) the caller already has — [_dive_callback]
+  /// skips parsing/emitting these. Set per [download] call, cleared after.
+  static Set<String> skipFingerprints = {};
+
   /// One switch for every logger owned by this isolate — the FFI layer and
   /// the BLE bridge callbacks.
   static void enableDebugLogging([logging.Level level = logging.Level.INFO]) {
@@ -444,17 +448,23 @@ class DiveComputerFfi {
     final _DiveCallbackUserdata customdata =
         userdata.cast<_DiveCallbackUserdata>().ref;
 
-    _parseDive(data, size, fingerprint, fsize, customdata.device.cast());
+    final currentFingerprint = _buildFingerprintHash(fingerprint, fsize);
 
     String? lastFingerprint;
-    String currentFingerprint = _buildFingerprintHash(fingerprint, fsize);
     if (customdata.lastFingerprint.address != ffi.nullptr.address) {
       lastFingerprint = customdata.lastFingerprint.cast<Utf8>().toDartString();
     }
-
-    // non-zero to continue
+    // Stop as soon as we reach an already-known newest dive (incremental sync).
     if (currentFingerprint == lastFingerprint) return 0;
-    return 1;
+
+    // Skip the (expensive) parse + isolate hop for dives the caller already
+    // has — a poor-man's resume: the device still streams the bytes, but a
+    // re-run flies past the dives already saved and continues from the rest.
+    if (!skipFingerprints.contains(currentFingerprint)) {
+      _parseDive(data, size, fingerprint, fsize, customdata.device.cast());
+    }
+
+    return 1; // non-zero to continue
   }
 
   static final _samplesCache = <int, Sample>{};

@@ -50,6 +50,10 @@ abstract class DiveComputerInterface {
     // completes. Persist each dive here so a mid-transfer disconnect still
     // leaves every parsed dive delivered.
     void Function(Dive dive)? onDive,
+    // Dive hashes the caller already has. Their parse + delivery is skipped
+    // (the device still streams the bytes) — a re-run flies past dives
+    // already saved and continues from the rest.
+    Iterable<String>? knownFingerprints,
   ]) {
     throw UnimplementedError();
   }

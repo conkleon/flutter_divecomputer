@@ -43,10 +43,12 @@ void main() {
   });
 
   test('download forwards the chosen serial port to the background isolate', () {
-    // Main isolate puts it in the message...
+    // Main isolate puts computer/transport/fingerprint/bridge/address/known
+    // into the message (whitespace-tolerant — the list is multi-line).
     expect(
-      source.contains(
-          '[computer, transport, lastFingerprint, bridge?.address, address]'),
+      RegExp(r'\[\s*computer,\s*transport,\s*lastFingerprint,\s*'
+              r'bridge\?\.address,\s*address,')
+          .hasMatch(source),
       isTrue,
     );
     // ...and the background isolate reads it back and hands it to the FFI.
