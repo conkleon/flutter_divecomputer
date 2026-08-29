@@ -26,4 +26,28 @@ void main() {
     );
     expect(source, contains('selectSerialPort(names, requested: serialPortName)'));
   });
+
+  test('_connectBridged is transport-parameterised and used by both bridged '
+      'transports', () {
+    expect(source, contains('_connectBridged(int bridgeAddress, int transport)'));
+    expect(source, isNot(contains('_connectBle(')));
+    expect(source,
+        contains('_connectBridged(bridgeAddress, dc_transport_t.DC_TRANSPORT_BLE)'));
+    expect(
+        source,
+        contains(
+            '_connectBridged(bridgeAddress, dc_transport_t.DC_TRANSPORT_BLUETOOTH)'));
+  });
+
+  test('download routes ComputerTransport.bluetooth to bridged (Android) or '
+      '_connectBluetooth (Windows)', () {
+    final dl = RegExp(r'case ComputerTransport\.bluetooth:(.+?)break;',
+            dotAll: true)
+        .firstMatch(source)
+        ?.group(1);
+    expect(dl, isNotNull);
+    expect(dl, contains('bridgeAddress != null'));
+    expect(dl, contains('_connectBridged(bridgeAddress'));
+    expect(dl, contains('_connectBluetooth(computerDescriptor, address)'));
+  });
 }

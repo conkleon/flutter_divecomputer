@@ -230,7 +230,7 @@ class DiveComputerFfi {
     Computer computer,
     ComputerTransport transport, [
     String? lastFingerprint,
-    int? bleBridgeAddress,
+    int? bridgeAddress,
     String? address,
   ]) {
     final computerDescriptor = _computerDescriptorCache[computer]!;
@@ -241,11 +241,15 @@ class DiveComputerFfi {
         iostream = _connectSerial(computerDescriptor, address);
         break;
       case ComputerTransport.ble:
-        if (bleBridgeAddress == null) {
-          throw ArgumentError(
-              'ComputerTransport.ble requires a bleBridgeAddress');
+        if (bridgeAddress == null) {
+          throw ArgumentError('ComputerTransport.ble requires a bridgeAddress');
         }
-        iostream = _connectBle(bleBridgeAddress);
+        iostream = _connectBridged(bridgeAddress, dc_transport_t.DC_TRANSPORT_BLE);
+        break;
+      case ComputerTransport.bluetooth:
+        iostream = bridgeAddress != null
+            ? _connectBridged(bridgeAddress, dc_transport_t.DC_TRANSPORT_BLUETOOTH)
+            : _connectBluetooth(computerDescriptor, address);
         break;
       default:
         throw UnimplementedError();
@@ -295,8 +299,8 @@ class DiveComputerFfi {
     }
   }
 
-  static ffi.Pointer<dc_iostream_t> _connectBle(int bleBridgeAddress) {
-    final bridge = BleBridge.fromAddress(bleBridgeAddress);
+  static ffi.Pointer<dc_iostream_t> _connectBridged(int bridgeAddress, int transport) {
+    final bridge = BleBridge.fromAddress(bridgeAddress);
     final callbacks = calloc<dc_custom_cbs_t>();
     callbacks.ref
       ..set_timeout = BleBridgeCallbacks.setTimeoutPtr
@@ -320,11 +324,11 @@ class DiveComputerFfi {
       _bindings.dc_custom_open(
         iostream,
         context.value,
-        dc_transport_t.DC_TRANSPORT_BLE,
+        transport,
         callbacks,
         bridge.pointer.cast(),
       ),
-      'ble custom iostream open',
+      'bridged custom iostream open (transport=$transport)',
     );
     calloc.free(callbacks);
     return iostream.value;
@@ -401,7 +405,6 @@ class DiveComputerFfi {
     return iostream.value;
   }
 
-  // ignore: unused_element  (wired into download() in the next task)
   static ffi.Pointer<dc_iostream_t> _connectBluetooth(
       ffi.Pointer<dc_descriptor_t> descriptor, String? address) {
     if (address == null || address.isEmpty) {
