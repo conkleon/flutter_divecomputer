@@ -7,6 +7,7 @@ import 'package:dive_computer/framework/ble/ble_bridge_callbacks.dart';
 import 'package:dive_computer/framework/ble/ble_bridge_state.dart';
 import 'package:dive_computer/framework/utils/serial_ports.dart';
 import 'package:dive_computer/framework/utils/transports_bitmask.dart';
+import 'package:dive_computer/types/bt_device.dart';
 import 'package:dive_computer/types/computer.dart';
 import 'package:dive_computer/types/dive.dart';
 import 'package:ffi/ffi.dart';
@@ -176,6 +177,53 @@ class DiveComputerFfi {
           'Unknown computer $computer — call supportedComputers first');
     }
     return _enumerateSerialPorts(descriptor);
+  }
+
+  /// Bluetooth-Classic devices libdivecomputer sees as paired for [computer]'s
+  /// descriptor. Windows only — Android goes through the RFCOMM channel.
+  static List<BtDevice> bluetoothDevices(Computer computer) {
+    final descriptor = _computerDescriptorCache[computer];
+    if (descriptor == null) {
+      throw ArgumentError(
+          'Unknown computer $computer — call supportedComputers first');
+    }
+
+    final iterator = calloc<ffi.Pointer<dc_iterator_t>>();
+    _handleResult(
+      _bindings.dc_bluetooth_iterator_new(iterator, context.value, descriptor),
+      'bluetooth iterator creation',
+    );
+
+    final devices = <BtDevice>[];
+    int result;
+    final dev = calloc<ffi.Pointer<dc_bluetooth_device_t>>();
+    final strbuf = calloc<ffi.Char>(18); // DC_BLUETOOTH_SIZE
+    try {
+      while ((result = _bindings.dc_iterator_next(iterator.value, dev.cast())) ==
+          dc_status_t.DC_STATUS_SUCCESS) {
+        final namePtr = _bindings.dc_bluetooth_device_get_name(dev.value);
+        final name = namePtr == ffi.nullptr
+            ? ''
+            : namePtr.cast<Utf8>().toDartString();
+        final addr = _bindings.dc_bluetooth_device_get_address(dev.value);
+        final addrStr = _bindings
+            .dc_bluetooth_addr2str(addr, strbuf, 18)
+            .cast<Utf8>()
+            .toDartString();
+        devices.add(BtDevice(name, addrStr));
+        _bindings.dc_bluetooth_device_free(dev.value);
+      }
+      _handleResult(result, 'bluetooth iterator next');
+    } finally {
+      _handleResult(_bindings.dc_iterator_free(iterator.value), 'iterator free');
+      calloc.free(strbuf);
+      calloc.free(dev);
+      calloc.free(iterator);
+    }
+
+    log.info('Bluetooth devices: '
+        '${devices.map((d) => '${d.name} (${d.address})').join(', ')}');
+    return devices;
   }
 
   static void download(
@@ -350,6 +398,30 @@ class DiveComputerFfi {
       calloc.free(chosenNative);
     }
 
+    return iostream.value;
+  }
+
+  // ignore: unused_element  (wired into download() in the next task)
+  static ffi.Pointer<dc_iostream_t> _connectBluetooth(
+      ffi.Pointer<dc_descriptor_t> descriptor, String? address) {
+    if (address == null || address.isEmpty) {
+      throw ArgumentError('Bluetooth download requires a device address');
+    }
+    final addrNative = address.toNativeUtf8();
+    final int64Addr = _bindings.dc_bluetooth_str2addr(addrNative.cast());
+    calloc.free(addrNative);
+    if (int64Addr == 0) {
+      throw ArgumentError('Malformed Bluetooth address: $address');
+    }
+    log.info('Opening Bluetooth RFCOMM to $address');
+
+    final iostream = calloc<ffi.Pointer<dc_iostream_t>>();
+    _handleResult(
+      // port 0 -> libdivecomputer resolves the SPP RFCOMM channel via SDP.
+      _bindings.dc_bluetooth_open(iostream, context.value, int64Addr, 0),
+      'bluetooth open (a DC_STATUS_NOACCESS here usually means the OS '
+          'pairing failed mutual authentication — re-pair the device)',
+    );
     return iostream.value;
   }
 
