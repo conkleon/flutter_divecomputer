@@ -34,6 +34,7 @@ flutter:
         ffiPlugin: true
       android:
         ffiPlugin: true
+        pluginClass: DiveComputerPlugin
       macos:
         ffiPlugin: true
       ios:
