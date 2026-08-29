@@ -171,24 +171,39 @@ class DiveComputerPlugin : FlutterPlugin, ActivityAware, MethodChannel.MethodCal
             // does not declare. Discovery isn't running anyway -> ignore.
             try { a.cancelDiscovery() } catch (e: SecurityException) { /* no BLUETOOTH_SCAN */ }
             val device = a.getRemoteDevice(address)
-            // RFCOMM connect on Android is flaky (the first attempt often fails
-            // with EBADFD / "read failed, socket might closed" right after
-            // bonding). Retry a couple of times before giving up.
+            // RFCOMM connect on Android is notoriously flaky, especially with
+            // older Bluetooth-2.0 devices like a Shearwater Petrel. Try, in
+            // order: insecure SDP-resolved (skips the secure-pairing handshake
+            // the old module chokes on), secure SDP-resolved, then a reflection
+            // socket on channel 1 that bypasses SDP entirely. Each is retried.
+            val strategies: List<Pair<String, () -> BluetoothSocket>> = listOf(
+              "insecure-sdp" to { device.createInsecureRfcommSocketToServiceRecord(SPP_UUID) },
+              "secure-sdp" to { device.createRfcommSocketToServiceRecord(SPP_UUID) },
+              "reflect-ch1" to {
+                device.javaClass.getMethod("createRfcommSocket", Int::class.javaPrimitiveType)
+                  .invoke(device, 1) as BluetoothSocket
+              },
+            )
             var s: BluetoothSocket? = null
             var lastErr: Exception? = null
-            for (attempt in 1..3) {
-              if (connectGen.get() != myGen) break
-              val candidate = device.createRfcommSocketToServiceRecord(SPP_UUID)
-              pendingSocket = candidate
-              try {
-                candidate.connect() // blocks ~12s, throws IOException on failure
-                s = candidate
-                break
-              } catch (e: Exception) {
-                lastErr = e
-                try { candidate.close() } catch (_: Exception) {}
-                pendingSocket = null
-                Thread.sleep(600)
+            outer@ for ((name, make) in strategies) {
+              for (attempt in 1..2) {
+                if (connectGen.get() != myGen) break@outer
+                val candidate = try { make() } catch (e: Exception) { lastErr = e; continue }
+                pendingSocket = candidate
+                try {
+                  try { a.cancelDiscovery() } catch (_: SecurityException) {}
+                  candidate.connect() // blocks ~12s
+                  android.util.Log.i("DiveComputerPlugin", "RFCOMM connected via $name (attempt $attempt)")
+                  s = candidate
+                  break@outer
+                } catch (e: Exception) {
+                  lastErr = e
+                  android.util.Log.w("DiveComputerPlugin", "RFCOMM $name attempt $attempt failed: ${e.message}")
+                  try { candidate.close() } catch (_: Exception) {}
+                  pendingSocket = null
+                  Thread.sleep(700)
+                }
               }
             }
             if (s == null) throw (lastErr ?: java.io.IOException("connect failed"))
