@@ -3,28 +3,19 @@ import 'dart:typed_data';
 
 import 'package:logging/logging.dart';
 
-import '../ble/ble_bridge_state.dart';
-import '../dive_computer_ffi_bindings_generated.dart';
+import '../bridged_transport.dart';
 import 'rfcomm_channel.dart';
 
 final _log = Logger('RfcommTransport');
 
-/// Main-isolate driver for a Bluetooth-Classic RFCOMM connection on behalf of
-/// a [BleBridge] running on the background isolate. RFCOMM is a plain byte
-/// stream, so this is simpler than `BleTransport` — no service/characteristic
-/// discovery. The mailbox pump / teardown mirror `BleTransport` (kept
-/// duplicated deliberately; see the plan's Global Constraints).
-class RfcommTransport {
+/// Main-isolate driver for a Bluetooth-Classic RFCOMM connection. RFCOMM is
+/// a plain byte stream, so beyond opening the socket this only wires the
+/// four [BridgedTransport] hooks.
+class RfcommTransport extends BridgedTransport {
   RfcommTransport(this._channel);
 
   final RfcommChannel _channel;
-  BleBridge? _bridge;
   bool _connected = false;
-
-  StreamSubscription<Uint8List>? _inboundSub;
-  Timer? _mailboxTimer;
-  int _lastServicedWriteSeq = 0;
-  bool _writeInFlight = false;
 
   bool get isConnected => _connected;
 
@@ -34,86 +25,24 @@ class RfcommTransport {
     _log.fine('RFCOMM connected to $address');
   }
 
-  /// Starts servicing [bridge]: forwards inbound socket bytes into it, and
-  /// polls its outbound mailbox to perform queued writes. Must be called
-  /// after [connect].
-  void attachBridge(BleBridge bridge) {
-    if (!_connected) {
-      throw StateError('attachBridge() called before connect()');
-    }
-    _bridge = bridge;
-    _lastServicedWriteSeq = 0;
-    _inboundSub = _channel.inbound.listen(
-      (bytes) {
-        // Read the FIELD, not the captured parameter: _teardown() nulls
-        // _bridge and cancels this subscription unawaited, so an
-        // already-queued notification can still arrive after the bridge's
-        // native memory was freed. Matches _serviceMailbox().
-        final b = _bridge;
-        if (b == null || b.isClosed) return;
-        final written = b.pushInbound(bytes);
-        if (written < bytes.length) {
-          _log.severe('Inbound ring buffer overflow: dropped '
-              '${bytes.length - written} of ${bytes.length} bytes');
-        }
-      },
-      onDone: _handleDisconnect,
-      onError: (Object e, StackTrace st) {
-        _log.warning('RFCOMM inbound error', e, st);
-        _handleDisconnect();
-      },
-    );
-    _mailboxTimer = Timer.periodic(
-        const Duration(milliseconds: 4), (_) => _serviceMailbox());
-  }
+  /// Public alias kept for `dive_computer_isolate.dart`, which calls
+  /// `disconnect()` in its teardown paths.
+  Future<void> disconnect() => teardown();
 
-  Future<void> _serviceMailbox() async {
-    // The 4ms timer keeps firing while an await is outstanding; without this
-    // guard a retry that bumps writeSeq mid-flight would start a second
-    // concurrent write on the socket.
-    if (_writeInFlight) return;
-    final bridge = _bridge;
-    if (bridge == null || !_connected) return;
-    // libdivecomputer's close callback set closed = 1. Stop our own 4ms timer
-    // now instead of waiting for the facade's disconnect() — complements the
-    // teardown-before-dispose ordering in DiveComputer.download.
-    if (bridge.isClosed) {
-      _teardown();
-      return;
-    }
-    final seq = bridge.pendingWriteSeq;
-    if (seq == _lastServicedWriteSeq) return;
-    _lastServicedWriteSeq = seq;
-    _writeInFlight = true;
-    try {
-      await _channel.write(bridge.pendingOutbound);
-      bridge.ackOutbound(seq, dc_status_t.DC_STATUS_SUCCESS);
-    } catch (e, st) {
-      _log.severe('RFCOMM mailbox write failed', e, st);
-      bridge.ackOutbound(seq, dc_status_t.DC_STATUS_IO);
-    } finally {
-      _writeInFlight = false;
-    }
-  }
+  // --- BridgedTransport hooks ---
 
-  void _handleDisconnect() {
-    _log.warning('RFCOMM socket disconnected');
-    _bridge?.markClosed();
-    _teardown();
-  }
+  @override
+  bool get isDeviceConnected => _connected;
 
-  Future<void> disconnect() async {
-    _bridge?.markClosed();
-    if (_connected) await _channel.disconnect().catchError((_) {});
-    _teardown();
-  }
+  @override
+  Future<void> writeToDevice(Uint8List bytes) => _channel.write(bytes);
 
-  void _teardown() {
-    _mailboxTimer?.cancel();
-    _mailboxTimer = null;
-    _inboundSub?.cancel();
-    _inboundSub = null;
+  @override
+  Stream<Uint8List> get inboundBytes => _channel.inbound;
+
+  @override
+  Future<void> closeDevice() async {
     _connected = false;
-    _bridge = null;
+    await _channel.disconnect().catchError((_) {});
   }
 }

@@ -11,8 +11,6 @@ void main() {
     final ch = FakeRfcommChannel();
     final t = RfcommTransport(ch);
     final bridge = BleBridge.allocate();
-    // LIFO: transport tears down first (stops the 4ms timer), then the bridge
-    // is freed. Regression guard for the write-after-free ordering bug.
     addTearDown(() => t.disconnect());
     addTearDown(bridge.dispose);
 
@@ -29,12 +27,11 @@ void main() {
     calloc.free(dest);
   });
 
-  test('outbound mailbox is drained to channel.write and acked', () async {
+  test('outbound mailbox is drained to channel.write and acked (safety net)',
+      () async {
     final ch = FakeRfcommChannel();
     final t = RfcommTransport(ch);
     final bridge = BleBridge.allocate();
-    // LIFO: transport tears down first (stops the 4ms timer), then the bridge
-    // is freed. Regression guard for the write-after-free ordering bug.
     addTearDown(() => t.disconnect());
     addTearDown(bridge.dispose);
     await t.connect('x');
@@ -47,7 +44,8 @@ void main() {
     final seq = bridge.queueOutbound(data, 3);
     calloc.free(data);
 
-    await Future<void>.delayed(const Duration(milliseconds: 20));
+    // No WriteReady message in this unit test — rely on the 250ms safety net.
+    await Future<void>.delayed(const Duration(milliseconds: 300));
     expect(ch.writes, [
       [10, 20, 30]
     ]);
