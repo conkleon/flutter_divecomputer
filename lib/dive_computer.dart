@@ -7,5 +7,6 @@ export 'types/bt_device.dart';
 export 'types/classic_bt_profile.dart';
 export 'types/computer.dart';
 export 'types/dive.dart';
+export 'types/sync.dart';
 
 export 'package:logging/logging.dart';
