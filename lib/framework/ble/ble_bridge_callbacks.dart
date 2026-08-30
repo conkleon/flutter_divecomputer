@@ -2,6 +2,7 @@ import 'dart:ffi' as ffi;
 import 'package:logging/logging.dart';
 
 import 'ble_bridge_state.dart';
+import '../sync/write_signal.dart';
 import '../dive_computer_ffi_bindings_generated.dart';
 
 final _log = Logger('BleBridge');
@@ -82,6 +83,8 @@ int _write(ffi.Pointer<ffi.Void> userdata, ffi.Pointer<ffi.Void> data,
       return dc_status_t.DC_STATUS_IO;
     }
     final seq = bridge.queueOutbound(data.cast<ffi.Uint8>(), size);
+    // Wake the main isolate now instead of waiting for its 250ms safety net.
+    syncHostPort?.send(WriteReady(seq));
     final acked = bridge.waitForWriteAck(seq, bridge.timeoutMs);
     if (bridge.isClosed) return dc_status_t.DC_STATUS_IO;
     if (!acked) {

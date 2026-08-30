@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:ffi' as ffi;
 import 'dart:io';
+import 'dart:isolate' show SendPort;
 import 'dart:developer' as developer;
 
 import 'package:dive_computer/framework/ble/ble_bridge_callbacks.dart';
@@ -13,6 +14,7 @@ import 'package:dive_computer/types/dive.dart';
 import 'package:ffi/ffi.dart';
 import 'package:logging/logging.dart' as logging;
 
+import 'sync/write_signal.dart';
 import 'dive_computer_ffi_bindings_generated.dart';
 
 final log = logging.Logger('DiveComputerFfi');
@@ -91,6 +93,11 @@ class DiveComputerFfi {
   /// Fingerprints (dive hashes) the caller already has — [_dive_callback]
   /// skips parsing/emitting these. Set per [download] call, cleared after.
   static Set<String> skipFingerprints = {};
+
+  /// Pass-through to [syncHostPort] on this isolate: `_spawnIsolate` sets the
+  /// main isolate's `SendPort` here for the duration of a transfer (and clears
+  /// it after) so the bridge `write` callback can post a `WriteReady`.
+  static set hostPort(SendPort? p) => syncHostPort = p;
 
   /// One switch for every logger owned by this isolate — the FFI layer and
   /// the BLE bridge callbacks.
