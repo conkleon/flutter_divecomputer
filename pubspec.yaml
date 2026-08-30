@@ -21,6 +21,7 @@ dependencies:
   universal_ble: '>=1.0.0 <3.0.0'
 
 dev_dependencies:
+  fake_async: ">=1.3.3 <2.0.0"
   ffigen: ">=10.0.0 <12.0.0"
   flutter_test:
     sdk: flutter

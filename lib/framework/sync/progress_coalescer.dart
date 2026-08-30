@@ -15,19 +15,21 @@ class ProgressCoalescer {
   final Duration interval;
 
   SyncProgress? _pending;
-  SyncPhase? _lastEmittedPhase;
+  SyncPhase? _lastPhase;
   Timer? _timer;
 
   void submit(SyncProgress progress, {bool immediate = false}) {
-    final phaseChanged = _pending != null && progress.phase != _pending!.phase;
+    final phaseChanged = _lastPhase != null && progress.phase != _lastPhase;
     if (immediate || phaseChanged) {
       _timer?.cancel();
       _timer = null;
       _pending = null;
-      _emitNow(progress);
+      _lastPhase = progress.phase;
+      _emit(progress);
       return;
     }
     _pending = progress;
+    _lastPhase = progress.phase;
     _timer ??= Timer(interval, _flush);
   }
 
@@ -35,12 +37,7 @@ class ProgressCoalescer {
     _timer = null;
     final p = _pending;
     _pending = null;
-    if (p != null) _emitNow(p);
-  }
-
-  void _emitNow(SyncProgress p) {
-    _lastEmittedPhase = p.phase;
-    _emit(p);
+    if (p != null) _emit(p);
   }
 
   void dispose() {
