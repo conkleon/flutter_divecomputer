@@ -47,6 +47,13 @@ abstract class DiveComputerInterface {
   /// streams every parsed dive on [diveStream] and progress on
   /// [syncProgress], and completes with the run's outcome. Only one sync may
   /// run at a time.
+  ///
+  /// Failures split two ways: anything before the download starts — a missing
+  /// or unresolvable endpoint, a transport that won't connect, a
+  /// `StateError` for a concurrent sync — is THROWN, while a failure once the
+  /// download is under way completes normally with
+  /// `SyncResult(status: SyncStatus.failed, error: ...)`. Callers should both
+  /// catch and check [SyncResult.status].
   Future<SyncResult> sync(SyncRequest request) => throw UnimplementedError();
 
   /// Coarse progress for the running [sync], rate-limited. Broadcast, open

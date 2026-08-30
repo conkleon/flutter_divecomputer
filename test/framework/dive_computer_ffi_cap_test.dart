@@ -109,6 +109,44 @@ void main() {
     expect(body, contains('SyncStatus.completed'));
   });
 
+  test('fingerprints are reported in walk order, not reversed', () {
+    final body = syncBody();
+    expect(body, contains('fingerprints: List.of(_fingerprintsThisRun)'));
+    expect(
+      body,
+      isNot(contains('_fingerprintsThisRun.reversed')),
+      reason: 'dc_device_foreach walks newest-first — which is what makes '
+          'lastFingerprint a real early stop — so the list is already '
+          'newest-first, matching SyncResult.fingerprints\' contract.',
+    );
+  });
+
+  test('a parse failure is reported as SyncStatus.failed, not completed', () {
+    // The walk is truncated by Pointer.fromFunction's exceptional return (0),
+    // which is also the "stop" signal — a swallowed parse throw would
+    // otherwise be indistinguishable from a clean full transfer.
+    final cb = RegExp(r'static int _dive_callback\(.*?\n  \}', dotAll: true)
+        .firstMatch(source)
+        ?.group(0);
+    expect(cb, isNotNull);
+    expect(cb, contains('_parseFailedThisRun = true'));
+    expect(
+      RegExp(r'try \{\s*_parseDive\(').hasMatch(cb!),
+      isTrue,
+      reason: '_parseDive must not be able to throw across the FFI boundary',
+    );
+    final body = syncBody();
+    expect(body, contains('_parseFailedThisRun'));
+    expect(body, contains('SyncStatus.failed'));
+    expect(
+      body.indexOf('_parseFailedThisRun') < body.indexOf('SyncStatus.failed'),
+      isTrue,
+      reason: '_parseFailedThisRun must gate SyncStatus.failed',
+    );
+    expect(source, contains('_parseFailedThisRun = false'),
+        reason: 'the flag must be reset per run');
+  });
+
   test('_dive_callback records every fingerprint and counts skips', () {
     final cb = RegExp(r'static int _dive_callback\(.*?\n  \}', dotAll: true)
         .firstMatch(source)

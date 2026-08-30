@@ -103,6 +103,7 @@ class DiveComputerFfi {
   static int _divesSkippedThisRun = 0;
   static final _fingerprintsThisRun = <String>[];
   static bool _stoppedAtKnownDive = false;
+  static bool _parseFailedThisRun = false;
 
   /// Pass-through to [syncHostPort] on this isolate: `_spawnIsolate` sets the
   /// main isolate's `SendPort` here for the duration of a transfer (and clears
@@ -290,6 +291,7 @@ class DiveComputerFfi {
     _divesSkippedThisRun = 0;
     _fingerprintsThisRun.clear();
     _stoppedAtKnownDive = false;
+    _parseFailedThisRun = false;
 
     final computerDescriptor = _computerDescriptorCache[computer]!;
 
@@ -352,14 +354,20 @@ class DiveComputerFfi {
       );
 
       final result = SyncResult(
-        status: _stoppedAtKnownDive
-            ? SyncStatus.stoppedAtKnownDive
-            : SyncStatus.completed,
+        // A parse throw truncates the walk (the callback's exceptional return
+        // is also the "stop" signal), so the log is incomplete — report that
+        // rather than a clean completion.
+        status: _parseFailedThisRun
+            ? SyncStatus.failed
+            : _stoppedAtKnownDive
+                ? SyncStatus.stoppedAtKnownDive
+                : SyncStatus.completed,
         divesParsed: _divesParsedThisRun,
         divesSkipped: _divesSkippedThisRun,
-        // libdivecomputer walks the log oldest-last; reverse so the caller
-        // persists them newest-first.
-        fingerprints: List.of(_fingerprintsThisRun.reversed),
+        // dc_device_foreach walks the log newest-first — which is what makes
+        // lastFingerprint a real early stop — so _fingerprintsThisRun is
+        // already newest-first. Do not reverse.
+        fingerprints: List.of(_fingerprintsThisRun),
       );
 
       _handleResult(
@@ -540,10 +548,20 @@ class DiveComputerFfi {
     if (skipFingerprints.contains(currentFingerprint)) {
       _divesSkippedThisRun++;
     } else {
-      _parseDive(data, size, fingerprint, fsize, customdata.device.cast());
-      // Counted here, not in _parseDive: a parse that throws must not inflate
-      // the reported count.
-      _divesParsedThisRun++;
+      try {
+        _parseDive(data, size, fingerprint, fsize, customdata.device.cast());
+        // Counted here, not in _parseDive: a parse that throws must not
+        // inflate the reported count.
+        _divesParsedThisRun++;
+      } catch (e) {
+        // Never let a throw cross the FFI boundary: dc_device_foreach would
+        // take Pointer.fromFunction's exceptional return (0) as "stop", which
+        // is indistinguishable from a clean early stop. Record it so sync()
+        // reports SyncStatus.failed instead of a false completion, and return
+        // normally so the walk ends on its own terms.
+        _parseFailedThisRun = true;
+        log.warning('Failed to parse dive $currentFingerprint: $e');
+      }
     }
 
     return 1; // non-zero to continue

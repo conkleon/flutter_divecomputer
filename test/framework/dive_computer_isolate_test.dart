@@ -78,8 +78,11 @@ void main() {
   });
 
   test('the dives-as-a-list reply path is gone (dives stream only)', () {
+    // Narrow on purpose: the deprecated `Future<List<Dive>> download(...)`
+    // shim legitimately reintroduces the `List<Dive>` literal. What must stay
+    // gone is the completer and the port-listener branch that fed it.
     expect(source, isNot(contains('_downloadedDives')));
-    expect(source, isNot(contains('List<Dive>')));
+    expect(source, isNot(contains('message is List<Dive>')));
   });
 
   test('bluetoothDevices round-trips with a guarded completer', () {
@@ -158,10 +161,21 @@ void main() {
       isTrue,
     );
     expect(
-      RegExp(r'is WriteReady\)[^;]*_activeBridgedTransport\?\.serviceMailbox')
+      // Bounded rather than [^;]*: an explanatory comment between the branch
+      // and the call is fine, and a semicolon in it must not break the guard.
+      RegExp(r'is WriteReady\)[\s\S]{0,400}?'
+              r'_activeBridgedTransport\?\.serviceMailbox')
           .hasMatch(source),
       isTrue,
     );
+  });
+
+  test('sync() never pushes errors onto the public streams', () {
+    // Failures travel through SyncRun (-> SyncResult.failed / a thrown
+    // pre-connection error), never as a stream error that would kill every
+    // subscriber of these long-lived broadcast controllers.
+    expect(source, isNot(contains('_progressController.addError')));
+    expect(source, isNot(contains('_diveController.addError')));
   });
 
   test('an isolate/transport error routes to handleError, not a stream error',
@@ -200,9 +214,60 @@ void main() {
     expect(source, contains('_pendingBleDevice'));
   });
 
-  test('the bridge is released before dispose, bounded by a timeout', () {
-    expect(source, contains('_bleBridgeReleased'));
-    expect(source, contains('const Duration(seconds: 60)'));
-    expect(source, contains('bridge.dispose()'));
+  /// The body of `Future<SyncResult> sync(SyncRequest request)`, delimited by
+  /// the next member (`_cleanupRun`) rather than the first `\n  }` — the
+  /// method is full of nested blocks and an early match would silently
+  /// truncate the ordering assertions below into a false pass.
+  String syncBody() {
+    final m = RegExp(
+            r'Future<SyncResult> sync\(SyncRequest request\).*?\n  void _cleanupRun',
+            dotAll: true)
+        .firstMatch(source);
+    expect(m, isNotNull, reason: 'could not locate the sync() method body');
+    return m!.group(0)!;
+  }
+
+  test('the bridge is released, then the transport is torn down, then and '
+      'only then is the bridge disposed', () {
+    // The use-after-free this whole task is built to avoid: BridgedTransport's
+    // inbound subscription and its 250ms safety-net timer can still reach into
+    // the bridge during disconnect()'s await, so dispose() MUST come last.
+    final body = syncBody();
+    const handshake = '_bleBridgeReleased?.future.timeout';
+    const dispose = 'bridge.dispose()';
+    for (final needle in const [handshake, dispose, '.disconnect()']) {
+      expect(body, contains(needle));
+    }
+    final iHandshake = body.indexOf(handshake);
+    // The first disconnect AFTER the handshake — sync() also disconnects on
+    // the pre-send failure path, which is a different (earlier) block.
+    final iDisconnect = body.indexOf('.disconnect()', iHandshake);
+    final iDispose = body.indexOf(dispose);
+    expect(iDisconnect, greaterThan(iHandshake),
+        reason: 'the bridge must be released by the FFI isolate before the '
+            'transport is torn down');
+    expect(iDispose, greaterThan(iDisconnect),
+        reason: 'freeing the bridge before disconnect() completes is a '
+            'use-after-free on shared native memory');
+    expect(body, contains('const Duration(seconds: 60)'),
+        reason: 'a lost handshake must not hang sync() forever');
+  });
+
+  test('the background isolate signals _BleBridgeReleased from its finally',
+      () {
+    final syncCase =
+        RegExp(r'case DiveComputerMethod\.sync:.*?\n          break;',
+                dotAll: true)
+            .firstMatch(source)
+            ?.group(0);
+    expect(syncCase, isNotNull);
+    final iFinally = syncCase!.indexOf('} finally {');
+    expect(iFinally, greaterThan(-1));
+    expect(
+      syncCase.substring(iFinally),
+      contains('sendPort.send(_BleBridgeReleased('),
+      reason: 'the handshake must fire even when the transfer throws, or the '
+          'main isolate waits out the full 60s timeout',
+    );
   });
 }
