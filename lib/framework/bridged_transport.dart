@@ -100,12 +100,17 @@ abstract class BridgedTransport {
   }
 
   void handleDisconnect() {
+    _log.warning('Bridged transport disconnected');
     _bridge?.markClosed();
     // teardown is async; callers of handleDisconnect don't await it.
     unawaited(teardown());
   }
 
   Future<void> teardown() async {
+    // First: unblock any FFI callback still parked on the bridge. Idempotent
+    // and safe from every call site (serviceMailbox-on-closed, handleDisconnect,
+    // explicit disconnect) — restores the pre-refactor disconnect() semantics.
+    _bridge?.markClosed();
     _safetyNet?.cancel();
     _safetyNet = null;
     await _inboundSub?.cancel();

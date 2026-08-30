@@ -116,7 +116,7 @@ void main() {
     bridge.timeoutMs = 2000;
 
     final write = BleBridgeCallbacks.writePtr.asFunction<_ReadWriteDart>();
-    final size = kOutboundCapacity + 1;
+    const size = kOutboundCapacity + 1;
     final data = calloc<ffi.Uint8>(size);
     final actual = calloc<ffi.Size>();
     addTearDown(() {

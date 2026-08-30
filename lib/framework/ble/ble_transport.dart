@@ -2,22 +2,22 @@ import 'dart:async';
 import 'dart:typed_data';
 import 'package:logging/logging.dart';
 
-import 'ble_bridge_state.dart';
 import 'ble_central.dart';
-import '../dive_computer_ffi_bindings_generated.dart';
+import '../bridged_transport.dart';
 import '../../types/ble_profile.dart';
 import '../../types/ble_scan_result.dart';
 
 final _log = Logger('BleTransport');
 
-/// Drives BLE I/O on the main isolate on behalf of a [BleBridge] running
-/// on the background isolate. See design spec's Components section.
-class BleTransport {
+/// Drives BLE I/O on the main isolate on behalf of a `BleBridge` running
+/// on the background isolate. Connection setup (scan, GATT discovery,
+/// characteristic resolution, the connection-state watch) lives here; the
+/// bridge-servicing machinery is inherited from [BridgedTransport].
+class BleTransport extends BridgedTransport {
   BleTransport(this._central);
 
   final BleCentral _central;
   BleConnection? _connection;
-  BleBridge? _bridge;
 
   // Resolved once in connect() from the profile + discovered GATT layout;
   // non-null exactly while _connection is.
@@ -26,11 +26,7 @@ class BleTransport {
   String? _notifyCharUuid;
   bool _writeWithResponse = false;
 
-  Timer? _mailboxTimer;
-  StreamSubscription<Uint8List>? _notifySub;
   StreamSubscription<bool>? _connStateSub;
-  int _lastServicedWriteSeq = 0;
-  bool _writeInFlight = false;
 
   bool get isConnected => _connection != null;
 
@@ -88,88 +84,45 @@ class BleTransport {
         'Failed to connect to ${device.name} after $maxAttempts attempts: $lastError');
   }
 
-  /// Starts servicing [bridge]: forwards BLE notifications into it, and
-  /// polls its outbound mailbox to perform queued writes. Must be called
-  /// after [connect].
-  void attachBridge(BleBridge bridge) {
-    final connection = _connection;
-    if (connection == null || _serviceUuid == null) {
-      throw StateError('attachBridge() called before connect()');
-    }
-    _bridge = bridge;
-    _lastServicedWriteSeq = 0;
-    _notifySub = connection
-        .subscribeNotifications(_serviceUuid!, _notifyCharUuid!)
-        .listen((bytes) {
-      // Read the FIELD, not the captured parameter: _teardown() nulls _bridge
-      // and cancels this subscription unawaited, so an already-queued
-      // notification can still arrive after the bridge's native memory was
-      // freed. Matches _serviceMailbox().
-      final b = _bridge;
-      if (b == null || b.isClosed) return;
-      final written = b.pushInbound(bytes);
-      if (written < bytes.length) {
-        _log.severe('Inbound ring buffer overflow: dropped '
-            '${bytes.length - written} of ${bytes.length} bytes');
-      }
-    });
-    _mailboxTimer =
-        Timer.periodic(const Duration(milliseconds: 4), (_) => _serviceMailbox());
+  /// Explicit disconnect. Delegates to the base's [teardown], which marks
+  /// the bridge closed, stops servicing, and closes the GATT link.
+  Future<void> disconnect() async {
+    await teardown();
   }
 
-  Future<void> _serviceMailbox() async {
-    // The 4ms timer keeps firing while an await is outstanding; without this
-    // guard a retry that bumps writeSeq mid-flight would start a second
-    // concurrent GATT write on the same characteristic.
-    if (_writeInFlight) return;
-    final bridge = _bridge;
-    final connection = _connection;
-    if (bridge == null || connection == null || _serviceUuid == null) return;
-    final seq = bridge.pendingWriteSeq;
-    if (seq == _lastServicedWriteSeq) return;
-    _lastServicedWriteSeq = seq;
-    _writeInFlight = true;
-    try {
-      await connection.write(
+  /// Callback for the connection-state watch: an unexpected GATT drop.
+  void _handleDisconnect() {
+    handleDisconnect();
+  }
+
+  // --- BridgedTransport hooks ---
+
+  @override
+  bool get isDeviceConnected => _connection != null && _serviceUuid != null;
+
+  @override
+  Future<void> writeToDevice(Uint8List bytes) => _connection!.write(
         _serviceUuid!,
         _writeCharUuid!,
-        bridge.pendingOutbound,
+        bytes,
         withResponse: _writeWithResponse,
       );
-      bridge.ackOutbound(seq, dc_status_t.DC_STATUS_SUCCESS);
-    } catch (e, st) {
-      _log.severe('Mailbox write failed', e, st);
-      bridge.ackOutbound(seq, dc_status_t.DC_STATUS_IO);
-    } finally {
-      _writeInFlight = false;
-    }
-  }
 
-  void _handleDisconnect() {
-    _log.warning('BLE device disconnected unexpectedly');
-    _bridge?.markClosed();
-    _teardown();
-  }
+  @override
+  Stream<Uint8List> get inboundBytes =>
+      _connection!.subscribeNotifications(_serviceUuid!, _notifyCharUuid!);
 
-  Future<void> disconnect() async {
-    _bridge?.markClosed();
-    await _connection?.disconnect();
-    _teardown();
-  }
-
-  void _teardown() {
-    _mailboxTimer?.cancel();
-    _mailboxTimer = null;
-    _notifySub?.cancel();
-    _notifySub = null;
-    _connStateSub?.cancel();
+  @override
+  Future<void> closeDevice() async {
+    await _connStateSub?.cancel();
     _connStateSub = null;
+    final c = _connection;
     _connection = null;
     _serviceUuid = null;
     _writeCharUuid = null;
     _notifyCharUuid = null;
     _writeWithResponse = false;
-    _bridge = null;
+    await c?.disconnect().catchError((_) {});
   }
 
   static BleGattService? _firstServiceMatching(

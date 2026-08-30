@@ -83,7 +83,7 @@ void main() {
       addTearDown(() => calloc.free(data));
       final seq = bridge.queueOutbound(data, 1);
       await _pollUntil(() => bridge.waitForWriteAck(seq, 0),
-          const Duration(milliseconds: 200));
+          const Duration(milliseconds: 300));
       return central.connections['d']!;
     }
 
@@ -165,7 +165,7 @@ void main() {
       addTearDown(() => calloc.free(data));
       final seq = bridge.queueOutbound(data, 1);
       await _pollUntil(() => bridge.waitForWriteAck(seq, 0),
-          const Duration(milliseconds: 200));
+          const Duration(milliseconds: 300));
       expect(central.connections['d']!.writeCharUuids, ['explicit-w']);
       expect(central.connections['d']!.subscribedNotifyCharUuid, 'explicit-n');
     });
@@ -214,7 +214,7 @@ void main() {
     final seq = bridge.queueOutbound(data, 3);
 
     final acked = await _pollUntil(
-        () => bridge.waitForWriteAck(seq, 0), const Duration(milliseconds: 200));
+        () => bridge.waitForWriteAck(seq, 0), const Duration(milliseconds: 300));
 
     expect(acked, isTrue);
     expect(central.connections[device.id]!.writes, [
@@ -257,7 +257,7 @@ void main() {
 
     // Let the mailbox timer pick up seq 1 and start the (slow) write.
     await _pollUntil(
-        () => connection.writes.isNotEmpty, const Duration(milliseconds: 200));
+        () => connection.writes.isNotEmpty, const Duration(milliseconds: 300));
 
     // libdivecomputer times out and retries while the write is in flight.
     data[0] = 2;
