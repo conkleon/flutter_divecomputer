@@ -1454,7 +1454,10 @@ import '../types/sync.dart';
         status: status,
         divesParsed: _divesParsedThisRun,
         divesSkipped: _divesSkippedThisRun,
-        fingerprints: List.of(_fingerprintsThisRun.reversed), // newest first
+        // dc_device_foreach walks the log NEWEST-FIRST (that is what makes
+        // lastFingerprint an early stop), so _fingerprintsThisRun is already
+        // newest-first — do NOT reverse it.
+        fingerprints: List.of(_fingerprintsThisRun), // newest first
       );
 ```
 
