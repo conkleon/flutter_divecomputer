@@ -57,9 +57,10 @@ class _DeviceInfoMsg {
   final int model, firmware, serial;
 }
 
-/// Extends (rather than implements) [DiveComputerInterface] so the deprecated
-/// `download`/`connectBle`/`disconnectBle` members resolve to the base class's
-/// throwing defaults until the compatibility shims land.
+/// Extends (rather than implements) [DiveComputerInterface]. The deprecated
+/// `download`/`connectBle`/`disconnectBle` members are overridden below as thin
+/// compatibility shims over [sync]; everything else the interface declares is
+/// implemented here directly.
 class DiveComputer extends DiveComputerInterface {
   late ReceivePort _receivePort, _errorPort;
   late Completer<SendPort> _sendPort;
@@ -385,6 +386,55 @@ class DiveComputer extends DiveComputerInterface {
     _activeBridgedTransport = null;
     _bleBridgeReleased = null;
     _syncInFlight = false;
+  }
+
+  @Deprecated('Use sync(SyncRequest). Will be removed in a future major version.')
+  @override
+  Future<List<Dive>> download(
+    Computer computer,
+    ComputerTransport transport, [
+    String? lastFingerprint,
+    String? address,
+    void Function(Dive dive)? onDive,
+    Iterable<String>? knownFingerprints,
+  ]) async {
+    final collected = <Dive>[];
+    final sub = diveStream.listen((d) {
+      collected.add(d);
+      onDive?.call(d);
+    });
+    try {
+      final result = await sync(SyncRequest(
+        computer: computer,
+        transport: transport,
+        endpoint: address,
+        lastFingerprint: lastFingerprint,
+        knownFingerprints: knownFingerprints?.toSet(),
+      ));
+      if (result.status == SyncStatus.failed && result.error != null) {
+        // Match the old contract: every parsed dive was already delivered via
+        // onDive before we surface the failure.
+        throw result.error!;
+      }
+      return collected;
+    } finally {
+      await sub.cancel();
+    }
+  }
+
+  @Deprecated('Use sync(SyncRequest). Will be removed in a future major version.')
+  @override
+  Future<void> connectBle(BleScanResult device) async {
+    _pendingBleDevice = device;
+  }
+
+  @Deprecated('Use sync(SyncRequest). Will be removed in a future major version.')
+  @override
+  Future<void> disconnectBle() async {
+    _pendingBleDevice = null;
+    if (_bleTransport.isConnected && !_syncInFlight) {
+      await _bleTransport.disconnect();
+    }
   }
 
   /// Resolves a BLE [SyncRequest.endpoint] (a device id) to the scan result
