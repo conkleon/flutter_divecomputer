@@ -82,6 +82,8 @@ vendor protocols, serial ports, or native memory — it just gets a
 
 ## Usage
 
+`download()` is deprecated — see [`doc/migration/1.x-to-2.0.md`](doc/migration/1.x-to-2.0.md) for the new `sync()` API.
+
 ```dart
 import 'package:dive_computer/dive_computer.dart';
 
@@ -89,11 +91,15 @@ final dc = DiveComputer.instance;
 dc.openConnection();
 
 final computers = await dc.supportedComputers;
-final dives = await dc.download(
-  computers.first,
-  computers.first.transports.first, // currently must be ComputerTransport.serial
-  lastKnownFingerprint, // optional: only download dives newer than this
-);
+final sub = dc.diveStream.listen((dive) {
+  // persist each dive as it arrives
+});
+final result = await dc.sync(SyncRequest(
+  computer: computers.first,
+  transport: computers.first.transports.first,
+  lastFingerprint: lastKnownFingerprint,
+));
+await sub.cancel();
 
 dc.closeConnection();
 ```

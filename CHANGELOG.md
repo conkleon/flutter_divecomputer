@@ -1,5 +1,9 @@
 ## Unreleased
 
+* **BREAKING (soft):** `download()` is now deprecated in favour of `sync(SyncRequest)`
+  with `syncProgress` / `diveStream`. See `doc/migration/1.x-to-2.0.md`.
+  `download()` still works and wraps `sync()` internally.
+
 * `download()` now takes an optional `onDive` callback, fired once per dive
   the moment it is parsed — persist each dive as it arrives so a mid-transfer
   disconnect leaves every downloaded dive delivered instead of losing the

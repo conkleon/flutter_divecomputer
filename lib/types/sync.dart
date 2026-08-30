@@ -86,6 +86,8 @@ class SyncResult {
   /// first. Persist as the next run's [SyncRequest.knownFingerprints].
   final List<String> fingerprints;
 
-  /// Set only when [status] is [SyncStatus.failed].
+  /// Set when [status] is [SyncStatus.failed], but may be null if the failure
+  /// occurred during parse on the background isolate (logged locally rather than
+  /// carried back to the caller).
   final Object? error;
 }
