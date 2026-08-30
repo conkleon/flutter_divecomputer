@@ -30,3 +30,6 @@ build/
 
 # Subagent-driven-development scratch workspace
 .superpowers/
+
+# git worktrees for isolated feature work
+.worktrees/
