@@ -11,6 +11,7 @@ import 'package:dive_computer/framework/utils/transports_bitmask.dart';
 import 'package:dive_computer/types/bt_device.dart';
 import 'package:dive_computer/types/computer.dart';
 import 'package:dive_computer/types/dive.dart';
+import 'package:dive_computer/types/sync.dart';
 import 'package:ffi/ffi.dart';
 import 'package:logging/logging.dart' as logging;
 
@@ -81,18 +82,27 @@ class DiveComputerFfi {
 
   static final _computerDescriptorCache =
       <Computer, ffi.Pointer<dc_descriptor_t>>{};
-  static final _divesCache = <Dive>[];
 
-  static Function(List<Dive>)? divesCallback;
-
-  /// Called once per dive as it is parsed, before [divesCallback] fires with
-  /// the full list. Set by the background isolate to stream dives across to
-  /// the main isolate incrementally.
+  /// Called once per dive as it is parsed. Set by the background isolate to
+  /// stream dives across to the main isolate. Dives are delivered ONLY here —
+  /// [sync] returns counts and fingerprints, never the dives themselves.
   static Function(Dive)? diveCallback;
 
+  /// Called on each libdivecomputer `DC_EVENT_PROGRESS` with raw byte counts.
+  static Function(int current, int maximum)? progressCallback;
+
+  /// Called on the `DC_EVENT_DEVINFO` event (usually once, early).
+  static Function(int model, int firmware, int serial)? deviceInfoCallback;
+
   /// Fingerprints (dive hashes) the caller already has — [_dive_callback]
-  /// skips parsing/emitting these. Set per [download] call, cleared after.
+  /// skips parsing/emitting these. Set per [sync] call, cleared after.
   static Set<String> skipFingerprints = {};
+
+  // Run-scoped counters, reset at the top of every [sync] call.
+  static int _divesParsedThisRun = 0;
+  static int _divesSkippedThisRun = 0;
+  static final _fingerprintsThisRun = <String>[];
+  static bool _stoppedAtKnownDive = false;
 
   /// Pass-through to [syncHostPort] on this isolate: `_spawnIsolate` sets the
   /// main isolate's `SendPort` here for the duration of a transfer (and clears
@@ -185,7 +195,7 @@ class DiveComputerFfi {
   /// The serial ports libdivecomputer enumerates for [computer]'s descriptor,
   /// deduplicated. On Windows this includes virtual COM ports for paired
   /// Bluetooth-Classic dive computers (e.g. a Shearwater Petrel). The caller
-  /// passes the chosen one back to [download] as `address`.
+  /// passes the chosen one back to [sync] as `address`.
   static List<String> serialPorts(Computer computer) {
     final descriptor = _computerDescriptorCache[computer];
     if (descriptor == null) {
@@ -242,13 +252,45 @@ class DiveComputerFfi {
     return devices;
   }
 
-  static void download(
+  /// Forwards libdivecomputer's device events to the callback slots above.
+  ///
+  /// Runs synchronously inside `dc_device_foreach` on the background isolate:
+  /// it reads the event struct and forwards, nothing more — no allocation, no
+  /// parsing, no string conversion. Anything heavier here stalls the transfer
+  /// (and, for a bridged transport, the device's own protocol timers).
+  // ignore: non_constant_identifier_names
+  static void _event_callback(
+    ffi.Pointer<dc_device_t> device,
+    int event,
+    ffi.Pointer<ffi.Void> data,
+    ffi.Pointer<ffi.Void> userdata,
+  ) {
+    switch (event) {
+      case dc_event_type_t.DC_EVENT_PROGRESS:
+        final p = data.cast<dc_event_progress_t>().ref;
+        progressCallback?.call(p.current, p.maximum);
+        break;
+      case dc_event_type_t.DC_EVENT_DEVINFO:
+        final d = data.cast<dc_event_devinfo_t>().ref;
+        deviceInfoCallback?.call(d.model, d.firmware, d.serial);
+        break;
+    }
+  }
+
+  /// Runs one full transfer and returns its outcome. Dives are delivered as
+  /// they are parsed via [diveCallback]; progress via [progressCallback].
+  static SyncResult sync(
     Computer computer,
-    ComputerTransport transport, [
+    ComputerTransport transport, {
     String? lastFingerprint,
     int? bridgeAddress,
     String? address,
-  ]) {
+  }) {
+    _divesParsedThisRun = 0;
+    _divesSkippedThisRun = 0;
+    _fingerprintsThisRun.clear();
+    _stoppedAtKnownDive = false;
+
     final computerDescriptor = _computerDescriptorCache[computer]!;
 
     final ffi.Pointer<dc_iostream_t> iostream;
@@ -283,12 +325,23 @@ class DiveComputerFfi {
         'device open',
       );
 
+      // Register the event handler BEFORE the transfer starts — progress and
+      // devinfo events only fire while the log walk below is running.
+      _handleResult(
+        _bindings.dc_device_set_events(
+          device.value,
+          dc_event_type_t.DC_EVENT_PROGRESS | dc_event_type_t.DC_EVENT_DEVINFO,
+          ffi.Pointer.fromFunction<dc_event_callback_tFunction>(_event_callback),
+          ffi.nullptr,
+        ),
+        'device set events',
+      );
+
       final customdata = calloc<_DiveCallbackUserdata>();
       customdata.ref.device = device.value;
       customdata.ref.lastFingerprint =
           lastFingerprint?.toNativeUtf8() ?? ffi.nullptr;
 
-      _divesCache.clear();
       _handleResult(
         _bindings.dc_device_foreach(
           device.value,
@@ -298,15 +351,23 @@ class DiveComputerFfi {
         'device foreach',
       );
 
-      if (lastFingerprint != null) {
-        _divesCache.removeWhere((e) => e.hash == lastFingerprint);
-      }
-      divesCallback?.call(_divesCache);
+      final result = SyncResult(
+        status: _stoppedAtKnownDive
+            ? SyncStatus.stoppedAtKnownDive
+            : SyncStatus.completed,
+        divesParsed: _divesParsedThisRun,
+        divesSkipped: _divesSkippedThisRun,
+        // libdivecomputer walks the log oldest-last; reverse so the caller
+        // persists them newest-first.
+        fingerprints: List.of(_fingerprintsThisRun.reversed),
+      );
 
       _handleResult(
         _bindings.dc_device_close(device.value),
         'device close',
       );
+
+      return result;
     } finally {
       _handleResult(
         _bindings.dc_iostream_close(iostream),
@@ -424,7 +485,7 @@ class DiveComputerFfi {
   static ffi.Pointer<dc_iostream_t> _connectBluetooth(
       ffi.Pointer<dc_descriptor_t> descriptor, String? address) {
     if (address == null || address.isEmpty) {
-      throw ArgumentError('Bluetooth download requires a device address');
+      throw ArgumentError('Bluetooth sync requires a device address');
     }
     final addrNative = address.toNativeUtf8();
     final int64Addr = _bindings.dc_bluetooth_str2addr(addrNative.cast());
@@ -462,13 +523,27 @@ class DiveComputerFfi {
       lastFingerprint = customdata.lastFingerprint.cast<Utf8>().toDartString();
     }
     // Stop as soon as we reach an already-known newest dive (incremental sync).
-    if (currentFingerprint == lastFingerprint) return 0;
+    // Returning 0 aborts the walk — recorded so sync() can report a real early
+    // stop rather than a full-log completion.
+    if (currentFingerprint == lastFingerprint) {
+      _stoppedAtKnownDive = true;
+      return 0;
+    }
+
+    // Every dive the device offered this run, parsed or skipped: the caller
+    // persists these as the next run's knownFingerprints.
+    _fingerprintsThisRun.add(currentFingerprint);
 
     // Skip the (expensive) parse + isolate hop for dives the caller already
     // has — a poor-man's resume: the device still streams the bytes, but a
     // re-run flies past the dives already saved and continues from the rest.
-    if (!skipFingerprints.contains(currentFingerprint)) {
+    if (skipFingerprints.contains(currentFingerprint)) {
+      _divesSkippedThisRun++;
+    } else {
       _parseDive(data, size, fingerprint, fsize, customdata.device.cast());
+      // Counted here, not in _parseDive: a parse that throws must not inflate
+      // the reported count.
+      _divesParsedThisRun++;
     }
 
     return 1; // non-zero to continue
@@ -584,9 +659,8 @@ class DiveComputerFfi {
       tanks: tanks,
     );
     log.info(dive);
-    _divesCache.add(dive);
     // Emit each dive the moment it is parsed, so a caller can persist it
-    // incrementally — a mid-download disconnect then still leaves every dive
+    // incrementally — a mid-sync disconnect then still leaves every dive
     // parsed so far delivered, instead of losing the whole transfer.
     diveCallback?.call(dive);
 
@@ -818,8 +892,8 @@ class DiveComputerFfi {
     var result = StringBuffer();
 
     for (var i = 0; i < fsize; ++i) {
-      var msn = (fingerprint.elementAt(i).value >> 4) & 0x0F;
-      var lsn = fingerprint.elementAt(i).value & 0x0F;
+      var msn = (fingerprint[i] >> 4) & 0x0F;
+      var lsn = fingerprint[i] & 0x0F;
 
       result.writeCharCode(ascii[msn]);
       result.writeCharCode(ascii[lsn]);

@@ -6,7 +6,9 @@ import 'package:test/test.dart';
 /// is impractical (see the note on the getter). These source-level guards
 /// pin the memoization contract from final-review finding C1 instead:
 /// concurrent `supportedComputers` callers must share one future / one
-/// round-trip, and a close must clear the memo so a reopen re-enumerates.
+/// round-trip, and a close must clear the memo so a reopen re-enumerates —
+/// plus the `sync()` wiring, whose real behaviour is unit-tested on the pure
+/// `SyncRun` / `ProgressCoalescer` pieces it delegates to.
 void main() {
   final source =
       File('lib/framework/dive_computer_isolate.dart').readAsStringSync();
@@ -42,27 +44,28 @@ void main() {
     );
   });
 
-  test('download forwards the chosen serial port to the background isolate', () {
-    // Main isolate puts computer/transport/fingerprint/bridge/address/known
+  test('sync forwards the endpoint and known fingerprints to the isolate', () {
+    // Main isolate puts computer/transport/fingerprint/bridge/endpoint/known
     // into the message (whitespace-tolerant — the list is multi-line).
     expect(
-      RegExp(r'\[\s*computer,\s*transport,\s*lastFingerprint,\s*'
-              r'bridge\?\.address,\s*address,')
+      RegExp(r'\[\s*request\.computer,\s*request\.transport,\s*'
+              r'request\.lastFingerprint,\s*bridge\?\.address,\s*'
+              r'request\.endpoint,')
           .hasMatch(source),
       isTrue,
     );
     // ...and the background isolate reads it back and hands it to the FFI.
     expect(source, contains('final address = message.\$2[4] as String?'));
     expect(
-      RegExp(r'DiveComputerFfi\.download\(computer, transport, lastFingerprint,'
-              r'\s*bleBridgeAddress, address\)')
+      RegExp(r'DiveComputerFfi\.sync\(\s*computer,\s*transport,\s*'
+              r'lastFingerprint: lastFingerprint,\s*'
+              r'bridgeAddress: bleBridgeAddress,\s*address: address,')
           .hasMatch(source),
       isTrue,
     );
   });
 
-  test('the List<Computer>/List<Dive> replies guard against double-complete',
-      () {
+  test('the List<Computer> reply guards against double-complete', () {
     expect(
       RegExp(r'is List<Computer>\)\s*\{.*?isCompleted == false\)\s*\{\s*'
               r'_supportedComputers\?\.complete\(message\)',
@@ -72,13 +75,11 @@ void main() {
       reason: 'A duplicate supportedComputers reply must not complete() an '
           'already-completed completer.',
     );
-    expect(
-      RegExp(r'is List<Dive>\)\s*\{.*?isCompleted == false\)\s*\{\s*'
-              r'_downloadedDives\?\.complete\(message\)',
-              dotAll: true)
-          .hasMatch(source),
-      isTrue,
-    );
+  });
+
+  test('the dives-as-a-list reply path is gone (dives stream only)', () {
+    expect(source, isNot(contains('_downloadedDives')));
+    expect(source, isNot(contains('List<Dive>')));
   });
 
   test('bluetoothDevices round-trips with a guarded completer', () {
@@ -96,14 +97,14 @@ void main() {
         contains('DiveComputerFfi.bluetoothDevices(message.\$2[0] as Computer)'));
   });
 
-  test('Android bluetooth download uses the RFCOMM channel + bridge', () {
+  test('Android bluetooth sync uses the RFCOMM channel + bridge', () {
     // bluetoothDevices: Android via channel, Windows via isolate.
     expect(source, contains('Platform.isAndroid'));
     expect(source, contains('_rfcommChannel.bondedDevices()'));
-    // download bluetooth on Android: connect transport, allocate bridge, attach.
+    // sync over bluetooth on Android: connect transport, allocate bridge, attach.
     expect(source, contains('_rfcommTransport.connect('));
     expect(source, contains('_rfcommTransport.attachBridge('));
-    // the download message for Android bluetooth carries a bridge address
+    // the sync message for Android bluetooth carries a bridge address
     expect(
       RegExp(r'ComputerTransport\.bluetooth.*Platform\.isAndroid', dotAll: true)
           .hasMatch(source),
@@ -111,22 +112,97 @@ void main() {
     );
   });
 
-  test('per-dive stream: onDive param, guarded field, Dive message branch, '
-      'diveCallback set+cleared in the isolate', () {
-    // download() accepts the onDive callback and stashes it.
-    expect(source, contains('void Function(Dive dive)? onDive'));
-    expect(source, contains('_onDive = onDive'));
-    // a stray single-Dive reply invokes it (no completer to double-complete).
+  test('sync() guards against a concurrent run', () {
+    expect(source, contains('_syncInFlight'));
     expect(
-      RegExp(r'is Dive\)\s*\{\s*//[^\n]*\n\s*_onDive\?\.call\(message\)')
+      RegExp(r'if \(_syncInFlight\)\s*\{?\s*throw StateError').hasMatch(source),
+      isTrue,
+      reason: 'a second sync() while one is running must throw',
+    );
+    expect("_syncInFlight = false".allMatches(source).length,
+        greaterThanOrEqualTo(1));
+  });
+
+  test('sync() drives a SyncRun through a ProgressCoalescer', () {
+    expect(source, contains('SyncRun('));
+    expect(source, contains('ProgressCoalescer('));
+    expect(source, contains('_progressController.add'));
+    expect(source, contains('_diveController.add'));
+    expect(source, contains('run.start()'));
+  });
+
+  test('syncProgress and diveStream are broadcast streams', () {
+    expect(source, contains('StreamController<SyncProgress>.broadcast()'));
+    expect(source, contains('StreamController<Dive>.broadcast()'));
+    expect(source, contains('Stream<SyncProgress> get syncProgress'));
+    expect(source, contains('Stream<Dive> get diveStream'));
+  });
+
+  test('port listener routes the new messages to the active run', () {
+    expect(
+      RegExp(r'is _ProgressMsg\)[^;]*_activeRun\?\.handleProgress')
           .hasMatch(source),
       isTrue,
     );
-    // _onDive is cleared on both exit paths so it can't leak to the next call.
-    expect('_onDive = null'.allMatches(source).length, greaterThanOrEqualTo(2));
-    // the background isolate sets diveCallback -> sendPort.send(dive) and
-    // clears it in the finally.
-    expect(source, contains('DiveComputerFfi.diveCallback = (dive) {'));
-    expect(source, contains('DiveComputerFfi.diveCallback = null;'));
+    expect(
+      RegExp(r'is _DeviceInfoMsg\)[^;]*_activeRun\?\.handleDeviceInfo')
+          .hasMatch(source),
+      isTrue,
+    );
+    expect(
+      RegExp(r'is Dive\)[^;]*_activeRun\?\.handleDive').hasMatch(source),
+      isTrue,
+    );
+    expect(
+      RegExp(r'is SyncResult\)[^;]*_activeRun\?\.handleResult').hasMatch(source),
+      isTrue,
+    );
+    expect(
+      RegExp(r'is WriteReady\)[^;]*_activeBridgedTransport\?\.serviceMailbox')
+          .hasMatch(source),
+      isTrue,
+    );
+  });
+
+  test('an isolate/transport error routes to handleError, not a stream error',
+      () {
+    expect(source, contains('_activeRun?.handleError'));
+    // Both the reply port and the isolate onError port must feed the run.
+    expect(
+      '_activeRun?.handleError'.allMatches(source).length,
+      greaterThanOrEqualTo(2),
+    );
+  });
+
+  test('_spawnIsolate handles DiveComputerMethod.sync and wires the callbacks',
+      () {
+    expect(source, contains('DiveComputerMethod.sync'));
+    expect(source, contains('DiveComputerFfi.progressCallback = '));
+    expect(source, contains('DiveComputerFfi.deviceInfoCallback = '));
+    expect(source, contains('DiveComputerFfi.diveCallback = '));
+    expect(source, contains('DiveComputerFfi.hostPort = sendPort'));
+    expect(source, contains('DiveComputerFfi.hostPort = null'));
+    expect(source, contains('sendPort.send(result)'));
+    // every slot cleared in the finally so it cannot leak into the next run
+    for (final cleared in const [
+      'DiveComputerFfi.diveCallback = null;',
+      'DiveComputerFfi.progressCallback = null;',
+      'DiveComputerFfi.deviceInfoCallback = null;',
+      'DiveComputerFfi.skipFingerprints = {};',
+    ]) {
+      expect(source, contains(cleared));
+    }
+  });
+
+  test('BLE sync resolves its device from the last scan', () {
+    expect(source, contains('_lastScan['));
+    expect(source, contains('_resolveBleDevice('));
+    expect(source, contains('_pendingBleDevice'));
+  });
+
+  test('the bridge is released before dispose, bounded by a timeout', () {
+    expect(source, contains('_bleBridgeReleased'));
+    expect(source, contains('const Duration(seconds: 60)'));
+    expect(source, contains('bridge.dispose()'));
   });
 }

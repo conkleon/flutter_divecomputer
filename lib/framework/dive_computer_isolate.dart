@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:isolate';
 import 'dart:developer' as developer;
 
+import 'package:dive_computer/framework/bridged_transport.dart';
 import 'package:dive_computer/framework/dive_computer_interface.dart';
 import 'package:dive_computer/framework/dive_computer_ffi.dart';
 import 'package:dive_computer/framework/ble/ble_bridge_state.dart';
@@ -10,10 +11,14 @@ import 'package:dive_computer/framework/ble/ble_central.dart';
 import 'package:dive_computer/framework/ble/ble_transport.dart';
 import 'package:dive_computer/framework/rfcomm/rfcomm_channel.dart';
 import 'package:dive_computer/framework/rfcomm/rfcomm_transport.dart';
+import 'package:dive_computer/framework/sync/progress_coalescer.dart';
+import 'package:dive_computer/framework/sync/sync_run.dart';
+import 'package:dive_computer/framework/sync/write_signal.dart';
 import 'package:dive_computer/types/ble_scan_result.dart';
 import 'package:dive_computer/types/bt_device.dart';
 import 'package:dive_computer/types/computer.dart';
 import 'package:dive_computer/types/dive.dart';
+import 'package:dive_computer/types/sync.dart';
 import 'package:flutter/foundation.dart';
 import 'package:logging/logging.dart';
 
@@ -24,22 +29,38 @@ enum DiveComputerMethod {
   supportedComputers,
   serialPorts,
   bluetoothDevices,
-  download,
+  sync,
 }
 
 typedef IsolateMessage = (DiveComputerMethod method, List<dynamic> args);
 
 /// Sent by the background isolate once it has fully returned from
-/// [DiveComputerFfi.download] (past its own iostream-close finally block) for a
-/// BLE transfer — only then is it safe for the main isolate to free the bridge's
-/// shared native memory. See the design spec's "no leaks, explicit two-phase
-/// teardown".
+/// [DiveComputerFfi.sync] (past its own iostream-close finally block) for a
+/// bridged transfer — only then is it safe for the main isolate to free the
+/// bridge's shared native memory. See the design spec's "no leaks, explicit
+/// two-phase teardown".
 class _BleBridgeReleased {
   const _BleBridgeReleased(this.address);
   final int address;
 }
 
-class DiveComputer implements DiveComputerInterface {
+/// One `DC_EVENT_PROGRESS` hop from the background isolate. A dedicated class
+/// (not a raw record/list) so the port listener can route it unambiguously.
+class _ProgressMsg {
+  const _ProgressMsg(this.current, this.maximum);
+  final int current, maximum;
+}
+
+/// One `DC_EVENT_DEVINFO` hop from the background isolate.
+class _DeviceInfoMsg {
+  const _DeviceInfoMsg(this.model, this.firmware, this.serial);
+  final int model, firmware, serial;
+}
+
+/// Extends (rather than implements) [DiveComputerInterface] so the deprecated
+/// `download`/`connectBle`/`disconnectBle` members resolve to the base class's
+/// throwing defaults until the compatibility shims land.
+class DiveComputer extends DiveComputerInterface {
   late ReceivePort _receivePort, _errorPort;
   late Completer<SendPort> _sendPort;
 
@@ -49,11 +70,6 @@ class DiveComputer implements DiveComputerInterface {
   Completer<List<Computer>>? _supportedComputers;
   Completer<List<String>>? _serialPorts;
   Completer<List<BtDevice>>? _bluetoothDevices;
-  Completer<List<Dive>>? _downloadedDives;
-
-  /// Set for the duration of a [download] call; invoked once per dive as the
-  /// background isolate parses and streams it across.
-  void Function(Dive)? _onDive;
 
   /// Memoized [supportedComputers] request. Concurrent callers (the example
   /// app now has two: `_MyAppState` and `_BleDebugScreenState`) share one
@@ -63,11 +79,38 @@ class DiveComputer implements DiveComputerInterface {
   /// a close/reopen re-enumerates.
   Future<List<Computer>>? _supportedComputersRequest;
 
+  /// Progress and dives for the *current* [sync] run. Broadcast and created
+  /// once for the life of the singleton: a UI may subscribe before the first
+  /// sync and stay subscribed across many, so these are never closed.
+  final _progressController = StreamController<SyncProgress>.broadcast();
+  final _diveController = StreamController<Dive>.broadcast();
+
+  @override
+  Stream<SyncProgress> get syncProgress => _progressController.stream;
+
+  @override
+  Stream<Dive> get diveStream => _diveController.stream;
+
+  bool _syncInFlight = false;
+  SyncRun? _activeRun;
+  ProgressCoalescer? _activeCoalescer;
+  BridgedTransport? _activeBridgedTransport;
+
   final BleTransport _bleTransport = BleTransport(UniversalBleCentral());
   Completer<void>? _bleBridgeReleased;
 
   final RfcommChannel _rfcommChannel = MethodChannelRfcommChannel();
   late final RfcommTransport _rfcommTransport = RfcommTransport(_rfcommChannel);
+
+  /// Devices seen by the most recent [scanForBleDevices]. `SyncRequest.endpoint`
+  /// for BLE is a device id string, but connecting needs the full
+  /// [BleScanResult] (it carries the matched `BleProfile`) — this is where the
+  /// id is resolved back to one.
+  final Map<String, BleScanResult> _lastScan = {};
+
+  /// Device set by the deprecated `connectBle()` shim, used as the fallback
+  /// when a BLE [SyncRequest] carries no endpoint.
+  BleScanResult? _pendingBleDevice;
 
   DiveComputer._() {
     _receivePort = ReceivePort();
@@ -97,13 +140,20 @@ class DiveComputer implements DiveComputerInterface {
         if (_bluetoothDevices?.isCompleted == false) {
           _bluetoothDevices?.complete(message);
         }
+      } else if (message is _ProgressMsg) {
+        _activeRun?.handleProgress(message.current, message.maximum);
+      } else if (message is _DeviceInfoMsg) {
+        _activeRun?.handleDeviceInfo(
+            message.model, message.firmware, message.serial);
       } else if (message is Dive) {
-        // A single dive streamed mid-download (before the final List<Dive>).
-        _onDive?.call(message);
-      } else if (message is List<Dive>) {
-        if (_downloadedDives?.isCompleted == false) {
-          _downloadedDives?.complete(message);
-        }
+        _activeRun?.handleDive(message);
+      } else if (message is SyncResult) {
+        _activeRun?.handleResult(message);
+      } else if (message is WriteReady) {
+        // The bridge write callback is parked waiting for this payload to
+        // reach the device — service the mailbox now (the BridgedTransport
+        // safety-net timer is only a fallback for a lost signal).
+        _activeBridgedTransport?.serviceMailbox();
       } else if (message is _BleBridgeReleased) {
         // Guarded: complete() on an already-completed completer throws inside
         // this listener and would wedge the singleton's port handler.
@@ -111,6 +161,7 @@ class DiveComputer implements DiveComputerInterface {
           _bleBridgeReleased?.complete();
         }
       } else if (message is Error || message is Exception) {
+        _activeRun?.handleError(message);
         if (_supportedComputers?.isCompleted == false) {
           _supportedComputers?.completeError(message);
         }
@@ -119,9 +170,6 @@ class DiveComputer implements DiveComputerInterface {
         }
         if (_bluetoothDevices?.isCompleted == false) {
           _bluetoothDevices?.completeError(message);
-        }
-        if (_downloadedDives?.isCompleted == false) {
-          _downloadedDives?.completeError(message);
         }
       } else {
         throw UnimplementedError('Message not implemented: $message');
@@ -137,6 +185,7 @@ class DiveComputer implements DiveComputerInterface {
           ? (message[0].toString(), message[1].toString())
           : (message.toString(), '');
       final error = RemoteError(desc, trace);
+      _activeRun?.handleError(error);
       if (_supportedComputers?.isCompleted == false) {
         _supportedComputers?.completeError(error);
       }
@@ -145,9 +194,6 @@ class DiveComputer implements DiveComputerInterface {
       }
       if (_bluetoothDevices?.isCompleted == false) {
         _bluetoothDevices?.completeError(error);
-      }
-      if (_downloadedDives?.isCompleted == false) {
-        _downloadedDives?.completeError(error);
       }
       if (_bleBridgeReleased?.isCompleted == false) {
         _bleBridgeReleased?.completeError(error);
@@ -178,8 +224,13 @@ class DiveComputer implements DiveComputerInterface {
     hierarchicalLoggingEnabled = true;
     forwardLoggerToDeveloperLog(bleTransportLog);
     bleTransportLog.level = Level.FINEST;
-    // The RFCOMM transport + channel also live on this isolate.
-    for (final name in const ['RfcommTransport', 'RfcommChannel']) {
+    // The RFCOMM transport + channel and the shared bridged-transport
+    // machinery also live on this isolate.
+    for (final name in const [
+      'RfcommTransport',
+      'RfcommChannel',
+      'BridgedTransport',
+    ]) {
       final l = Logger(name);
       forwardLoggerToDeveloperLog(l);
       l.level = Level.FINEST;
@@ -218,89 +269,93 @@ class DiveComputer implements DiveComputerInterface {
       : Future.value(true);
 
   @override
-  Stream<BleScanResult> scanForBleDevices() => _bleTransport.scanForDevices();
+  Stream<BleScanResult> scanForBleDevices() =>
+      _bleTransport.scanForDevices().map((r) {
+        // Remembered so a later SyncRequest.endpoint (a device id) can be
+        // resolved back to the full scan result.
+        _lastScan[r.id] = r;
+        return r;
+      });
 
   @override
-  Future<void> connectBle(BleScanResult device) =>
-      _bleTransport.connect(device);
+  Future<SyncResult> sync(SyncRequest request) async {
+    if (_syncInFlight) {
+      throw StateError('A sync is already in progress');
+    }
+    _syncInFlight = true;
 
-  @override
-  Future<void> disconnectBle() => _bleTransport.disconnect();
+    final coalescer = ProgressCoalescer(_progressController.add);
+    final run = SyncRun(
+      onProgress: (p, {required immediate}) =>
+          coalescer.submit(p, immediate: immediate),
+      onDive: _diveController.add,
+    );
+    _activeRun = run;
+    _activeCoalescer = coalescer;
+    run.start();
 
-  @override
-  Future<List<Dive>> download(
-    Computer computer,
-    ComputerTransport transport, [
-    String? lastFingerprint,
-    String? address,
-    void Function(Dive dive)? onDive,
-    Iterable<String>? knownFingerprints,
-  ]) async {
-    _onDive = onDive;
     BleBridge? bridge;
-    // Allocate/attach/send are grouped so that any failure before the send is
-    // confirmed disposes the bridge and rethrows WITHOUT entering the
+    // Connect/allocate/attach/send are grouped so that any failure before the
+    // send is confirmed disposes the bridge and rethrows WITHOUT entering the
     // await-released path below: the background isolate never received the
-    // bridge, so _BleBridgeReleased would never arrive and download() would
-    // hang forever.
+    // bridge, so _BleBridgeReleased would never arrive and sync() would hang
+    // forever.
     try {
-      if (transport == ComputerTransport.ble) {
-        if (!_bleTransport.isConnected) {
-          throw StateError(
-              'download() with ComputerTransport.ble requires connectBle() '
-              'to have succeeded first');
-        }
+      if (request.transport == ComputerTransport.ble) {
+        await _bleTransport.connect(_resolveBleDevice(request.endpoint));
         bridge = BleBridge.allocate();
         _bleTransport.attachBridge(bridge);
+        _activeBridgedTransport = _bleTransport;
         _bleBridgeReleased = Completer<void>();
-      } else if (transport == ComputerTransport.bluetooth &&
+      } else if (request.transport == ComputerTransport.bluetooth &&
           Platform.isAndroid) {
-        if (address == null) {
-          throw ArgumentError('Android bluetooth download requires an address');
+        if (request.endpoint == null) {
+          throw ArgumentError('Android bluetooth sync requires an endpoint');
         }
-        await _rfcommTransport.connect(address);
+        await _rfcommTransport.connect(request.endpoint!);
         bridge = BleBridge.allocate();
         _rfcommTransport.attachBridge(bridge);
+        _activeBridgedTransport = _rfcommTransport;
         _bleBridgeReleased = Completer<void>();
       }
       await _send((
-        DiveComputerMethod.download,
+        DiveComputerMethod.sync,
         [
-          computer,
-          transport,
-          lastFingerprint,
+          request.computer,
+          request.transport,
+          request.lastFingerprint,
           bridge?.address,
-          address,
-          knownFingerprints?.toList(growable: false),
+          request.endpoint,
+          request.knownFingerprints?.toList(growable: false),
         ],
       ));
     } catch (_) {
-      // Tear the transport down BEFORE freeing the bridge: disconnect() writes
-      // into the bridge (markClosed) and the 4ms mailbox timer can fire during
-      // its await — both would touch freed native memory if dispose() ran
-      // first.
-      if (transport == ComputerTransport.bluetooth && Platform.isAndroid) {
+      // Tear the transport down BEFORE freeing the bridge: BridgedTransport's
+      // inbound subscription and its 250ms safety-net timer can still reach
+      // for the bridge during disconnect()'s await, and both would touch freed
+      // native memory if dispose() ran first.
+      if (request.transport == ComputerTransport.bluetooth &&
+          Platform.isAndroid) {
         await _rfcommTransport.disconnect().catchError((_) {});
+      } else if (request.transport == ComputerTransport.ble) {
+        await _bleTransport.disconnect().catchError((_) {});
       }
-      if (bridge != null) {
-        bridge.dispose();
-        bridge = null;
-      }
-      _bleBridgeReleased = null;
-      _onDive = null;
+      bridge?.dispose();
+      _cleanupRun();
       rethrow;
     }
+
     try {
-      return await (_downloadedDives = Completer()).future;
+      return await run.result;
     } finally {
-      _onDive = null;
       if (bridge != null) {
         // The _BleBridgeReleased handshake guarantees the FFI isolate is done
-        // with the bridge. Bounded so a lost handshake can't hang download()
+        // with the bridge. Bounded so a lost handshake can't hang sync()
         // forever.
         try {
-          await _bleBridgeReleased!.future
-              .timeout(const Duration(seconds: 60));
+          // Null-safe on purpose: this runs in a finally, and a NoSuchMethod
+          // here would mask the run's real result.
+          await _bleBridgeReleased?.future.timeout(const Duration(seconds: 60));
         } on TimeoutException {
           developer.log(
             'Timed out waiting for _BleBridgeReleased handshake; '
@@ -309,15 +364,44 @@ class DiveComputer implements DiveComputerInterface {
             level: 900,
           );
         } catch (_) {
-          // Isolate error already surfaced on _downloadedDives via _errorPort.
+          // Isolate error already surfaced on the run via _errorPort.
         }
         // Disconnect the transport BEFORE dispose() — see the catch block.
-        if (transport == ComputerTransport.bluetooth && Platform.isAndroid) {
+        if (_activeBridgedTransport == _rfcommTransport) {
           await _rfcommTransport.disconnect().catchError((_) {});
+        } else if (_activeBridgedTransport == _bleTransport) {
+          await _bleTransport.disconnect().catchError((_) {});
         }
         bridge.dispose();
       }
+      _cleanupRun();
     }
+  }
+
+  void _cleanupRun() {
+    _activeCoalescer?.dispose();
+    _activeCoalescer = null;
+    _activeRun = null;
+    _activeBridgedTransport = null;
+    _bleBridgeReleased = null;
+    _syncInFlight = false;
+  }
+
+  /// Resolves a BLE [SyncRequest.endpoint] (a device id) to the scan result
+  /// that carries its matched profile.
+  BleScanResult _resolveBleDevice(String? endpoint) {
+    if (endpoint != null) {
+      final scanned = _lastScan[endpoint];
+      if (scanned != null) return scanned;
+    }
+    final pending = _pendingBleDevice;
+    if (pending != null && (endpoint == null || endpoint == pending.id)) {
+      return pending;
+    }
+    throw ArgumentError(
+        'BLE sync needs a scanned device. Pass SyncRequest.endpoint as a '
+        'BleScanResult id from scanForBleDevices(), or call the (deprecated) '
+        'connectBle() first.');
   }
 }
 
@@ -361,33 +445,41 @@ _spawnIsolate(SendPort sendPort) {
           sendPort.send(
               DiveComputerFfi.bluetoothDevices(message.$2[0] as Computer));
           break;
-        case DiveComputerMethod.download:
+        case DiveComputerMethod.sync:
           final computer = message.$2[0] as Computer;
           final transport = message.$2[1] as ComputerTransport;
           final lastFingerprint = message.$2[2] as String?;
           final bleBridgeAddress = message.$2[3] as int?;
           final address = message.$2[4] as String?;
           final knownFingerprints = (message.$2[5] as List?)?.cast<String>();
-          DiveComputerFfi.divesCallback = (dives) {
-            sendPort.send(dives);
-          };
-          DiveComputerFfi.diveCallback = (dive) {
-            sendPort.send(dive);
-          };
+          DiveComputerFfi.diveCallback = (dive) => sendPort.send(dive);
+          DiveComputerFfi.progressCallback =
+              (current, maximum) => sendPort.send(_ProgressMsg(current, maximum));
+          DiveComputerFfi.deviceInfoCallback = (model, firmware, serial) =>
+              sendPort.send(_DeviceInfoMsg(model, firmware, serial));
           DiveComputerFfi.skipFingerprints = knownFingerprints?.toSet() ?? {};
+          // Lets the bridge write callback signal the main isolate directly.
+          DiveComputerFfi.hostPort = sendPort;
           try {
-            DiveComputerFfi.download(computer, transport, lastFingerprint,
-                bleBridgeAddress, address);
+            final result = DiveComputerFfi.sync(
+              computer,
+              transport,
+              lastFingerprint: lastFingerprint,
+              bridgeAddress: bleBridgeAddress,
+              address: address,
+            );
+            sendPort.send(result);
           } finally {
             DiveComputerFfi.diveCallback = null;
+            DiveComputerFfi.progressCallback = null;
+            DiveComputerFfi.deviceInfoCallback = null;
             DiveComputerFfi.skipFingerprints = {};
+            DiveComputerFfi.hostPort = null;
             if (bleBridgeAddress != null) {
               sendPort.send(_BleBridgeReleased(bleBridgeAddress));
             }
           }
           break;
-        default:
-          throw UnimplementedError('Message not implemented: $message');
       }
     } catch (e) {
       sendPort.send(initializationError ?? e);
