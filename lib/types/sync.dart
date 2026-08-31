@@ -86,8 +86,9 @@ class SyncResult {
   /// first. Persist as the next run's [SyncRequest.knownFingerprints].
   final List<String> fingerprints;
 
-  /// Set when [status] is [SyncStatus.failed], but may be null if the failure
-  /// occurred during parse on the background isolate (logged locally rather than
-  /// carried back to the caller).
+  /// Set when [status] is [SyncStatus.failed], null otherwise. A failure that
+  /// originated on the background isolate (an unparseable dive) arrives as a
+  /// message `String` rather than the original exception object — only
+  /// sendable values cross the isolate port.
   final Object? error;
 }

@@ -103,7 +103,10 @@ class DiveComputerFfi {
   static int _divesSkippedThisRun = 0;
   static final _fingerprintsThisRun = <String>[];
   static bool _stoppedAtKnownDive = false;
-  static bool _parseFailedThisRun = false;
+  /// First parse failure of the run, as a message string (a `String` crosses
+  /// the isolate port; the caught exception object may not). Null when every
+  /// offered dive parsed.
+  static String? _parseErrorThisRun;
 
   /// Pass-through to [syncHostPort] on this isolate: `_spawnIsolate` sets the
   /// main isolate's `SendPort` here for the duration of a transfer (and clears
@@ -291,7 +294,7 @@ class DiveComputerFfi {
     _divesSkippedThisRun = 0;
     _fingerprintsThisRun.clear();
     _stoppedAtKnownDive = false;
-    _parseFailedThisRun = false;
+    _parseErrorThisRun = null;
 
     final computerDescriptor = _computerDescriptorCache[computer]!;
 
@@ -354,14 +357,18 @@ class DiveComputerFfi {
       );
 
       final result = SyncResult(
-        // A parse throw truncates the walk (the callback's exceptional return
-        // is also the "stop" signal), so the log is incomplete — report that
-        // rather than a clean completion.
-        status: _parseFailedThisRun
+        // A parse throw no longer truncates the walk — _dive_callback catches
+        // it and returns non-zero, so the transfer runs to the end and every
+        // other dive is still delivered. But the run did not produce the full
+        // log, so report it as failed and carry the FIRST parse error across
+        // the port: `divesParsed` alone cannot distinguish "one dive was
+        // unparseable" from "the device had fewer dives".
+        status: _parseErrorThisRun != null
             ? SyncStatus.failed
             : _stoppedAtKnownDive
                 ? SyncStatus.stoppedAtKnownDive
                 : SyncStatus.completed,
+        error: _parseErrorThisRun,
         divesParsed: _divesParsedThisRun,
         divesSkipped: _divesSkippedThisRun,
         // dc_device_foreach walks the log newest-first — which is what makes
@@ -556,10 +563,11 @@ class DiveComputerFfi {
       } catch (e) {
         // Never let a throw cross the FFI boundary: dc_device_foreach would
         // take Pointer.fromFunction's exceptional return (0) as "stop", which
-        // is indistinguishable from a clean early stop. Record it so sync()
-        // reports SyncStatus.failed instead of a false completion, and return
-        // normally so the walk ends on its own terms.
-        _parseFailedThisRun = true;
+        // is indistinguishable from a clean early stop. Record the FIRST
+        // failure as a sendable String so sync() can report SyncStatus.failed
+        // with a non-null error instead of a false completion, and return
+        // non-zero so the walk continues and the remaining dives still land.
+        _parseErrorThisRun ??= 'Failed to parse dive $currentFingerprint: $e';
         log.warning('Failed to parse dive $currentFingerprint: $e');
       }
     }

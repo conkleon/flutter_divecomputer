@@ -121,30 +121,38 @@ void main() {
     );
   });
 
-  test('a parse failure is reported as SyncStatus.failed, not completed', () {
-    // The walk is truncated by Pointer.fromFunction's exceptional return (0),
-    // which is also the "stop" signal — a swallowed parse throw would
-    // otherwise be indistinguishable from a clean full transfer.
+  test('a parse failure is reported as SyncStatus.failed with a non-null error',
+      () {
+    // The callback catches the parse throw and returns non-zero, so the walk
+    // CONTINUES and the remaining dives still land. The first failure is
+    // recorded as a String (sendable across the isolate port) so the run can
+    // be reported as failed *with* a reason instead of `error: null`.
     final cb = RegExp(r'static int _dive_callback\(.*?\n  \}', dotAll: true)
         .firstMatch(source)
         ?.group(0);
     expect(cb, isNotNull);
-    expect(cb, contains('_parseFailedThisRun = true'));
+    expect(cb, contains('_parseErrorThisRun ??='),
+        reason: 'record the FIRST parse error, do not overwrite it');
     expect(
       RegExp(r'try \{\s*_parseDive\(').hasMatch(cb!),
       isTrue,
       reason: '_parseDive must not be able to throw across the FFI boundary',
     );
+    expect(cb, contains('return 1; // non-zero to continue'),
+        reason: 'a bad dive must not truncate the walk');
     final body = syncBody();
-    expect(body, contains('_parseFailedThisRun'));
+    expect(body, contains('_parseErrorThisRun != null'));
     expect(body, contains('SyncStatus.failed'));
     expect(
-      body.indexOf('_parseFailedThisRun') < body.indexOf('SyncStatus.failed'),
+      body.indexOf('_parseErrorThisRun != null') <
+          body.indexOf('SyncStatus.failed'),
       isTrue,
-      reason: '_parseFailedThisRun must gate SyncStatus.failed',
+      reason: '_parseErrorThisRun must gate SyncStatus.failed',
     );
-    expect(source, contains('_parseFailedThisRun = false'),
-        reason: 'the flag must be reset per run');
+    expect(body, contains('error: _parseErrorThisRun'),
+        reason: 'SyncResult.error must carry the parse failure to the caller');
+    expect(source, contains('_parseErrorThisRun = null'),
+        reason: 'the field must be reset per run');
   });
 
   test('_dive_callback records every fingerprint and counts skips', () {
