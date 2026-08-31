@@ -137,7 +137,13 @@ class _MyAppState extends State<MyApp> {
                   stream: dc.syncProgress,
                   builder: (_, snap) {
                     final f = snap.data?.fraction;
-                    return LinearProgressIndicator(value: f);
+                    // AlertDialog runs its content through an IntrinsicWidth
+                    // pass; LinearProgressIndicator has an unbounded intrinsic
+                    // width, so pin it to the dialog width.
+                    return SizedBox(
+                      width: double.maxFinite,
+                      child: LinearProgressIndicator(value: f),
+                    );
                   },
                 ),
               ],
@@ -210,9 +216,6 @@ class _MyAppState extends State<MyApp> {
             endpoint: picked.address,
             knownFingerprints: known,
           ));
-          if (pending.isNotEmpty) {
-            outFile.writeAsStringSync(pending.toString(), mode: FileMode.append);
-          }
           status.value = switch (result.status) {
             SyncStatus.failed => 'Stopped at $count dives: ${result.error}\n'
                 'Re-run — it skips what is already saved.',
@@ -223,6 +226,11 @@ class _MyAppState extends State<MyApp> {
         } finally {
           await sub.cancel();
           await progressSub.cancel();
+          // Flush whatever the dive stream left buffered — on the success path
+          // and on a thrown sync() (pre-connection errors still propagate).
+          if (pending.isNotEmpty) {
+            outFile.writeAsStringSync(pending.toString(), mode: FileMode.append);
+          }
         }
         // Offer to share the file regardless of success/failure.
         if (await outFile.exists() && await outFile.length() > 0) {
