@@ -90,12 +90,26 @@ abstract class BridgedTransport {
     _writeInFlight = true;
     try {
       await writeToDevice(bridge.pendingOutbound);
+      // Re-check the FIELD, not the captured local: teardown() nulls _bridge
+      // while this write is in flight, and sync()'s finally then disposes
+      // (calloc.free) the bridge. Acking through the captured pointer after
+      // that is a use-after-free.
+      if (!identical(_bridge, bridge)) return;
       bridge.ackOutbound(seq, dc_status_t.DC_STATUS_SUCCESS);
     } catch (e, st) {
       _log.severe('Mailbox write failed', e, st);
+      if (!identical(_bridge, bridge)) return;
       bridge.ackOutbound(seq, dc_status_t.DC_STATUS_IO);
     } finally {
       _writeInFlight = false;
+      // A WriteReady that arrived while this write was in flight was dropped
+      // by the _writeInFlight early-return; re-drive now instead of waiting
+      // up to 250ms for the safety net. Bounded: the mailbox has one slot,
+      // so at most one re-drive per settled write.
+      final b = _bridge;
+      if (b != null && !b.isClosed && b.pendingWriteSeq != _lastServicedWriteSeq) {
+        unawaited(serviceMailbox().catchError((_) {}));
+      }
     }
   }
 

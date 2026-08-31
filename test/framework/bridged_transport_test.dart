@@ -90,6 +90,54 @@ void main() {
     });
   });
 
+  test('a write that settles after teardown does not ack the freed bridge',
+      () async {
+    final t = _FakeTransport();
+    final bridge = BleBridge.allocate();
+    t.attachBridge(bridge);
+
+    t.gate = Completer<void>();
+    _queue(bridge, [1, 2, 3]);
+    final inFlight = t.serviceMailbox(); // parked inside writeToDevice
+    await t.teardown(); // nulls _bridge; sync()'s finally would dispose next
+    t.gate!.complete();
+    await inFlight; // must not throw
+
+    // Assert BEFORE dispose(): the ack must not have been written through the
+    // (about to be freed) pointer. waitForWriteAck() is no good here — it
+    // reports true for a closed bridge — so read writeAckSeq directly.
+    expect(bridge.pointer.ref.writeAckSeq, 0);
+    bridge.dispose();
+  });
+
+  test('a WriteReady during an in-flight write is drained, not dropped',
+      () async {
+    final t = _FakeTransport();
+    final bridge = BleBridge.allocate();
+    addTearDown(() => t.teardown());
+    addTearDown(bridge.dispose);
+    t.attachBridge(bridge);
+
+    final firstGate = Completer<void>();
+    t.gate = firstGate;
+    _queue(bridge, [1]);
+    final first = t.serviceMailbox(); // parked inside writeToDevice
+    final seq2 = _queue(bridge, [2]); // WriteReady arrives mid-flight...
+    await t.serviceMailbox(); // ...and is dropped by the _writeInFlight guard
+    expect(t.writeCalls, 1);
+
+    t.gate = null; // let the re-drive complete without gating
+    firstGate.complete();
+    await first;
+    // The finally re-drove the mailbox: no 250ms safety-net wait needed.
+    await Future<void>.delayed(Duration.zero);
+    expect(t.writes, [
+      [1],
+      [2]
+    ]);
+    expect(bridge.waitForWriteAck(seq2, 0), isTrue);
+  });
+
   test('inbound bytes land in the ring buffer', () async {
     final t = _FakeTransport();
     final bridge = BleBridge.allocate();
