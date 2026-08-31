@@ -223,11 +223,20 @@ class _MyAppState extends State<MyApp> {
                 '(${result.divesParsed} new, ${result.divesSkipped} skipped).\n'
                 'Saved to:\n${outFile.path}',
           };
+        } catch (e) {
+          // sync() THROWS for pre-connection failures (unresolvable endpoint,
+          // RFCOMM connect failure, concurrent-sync StateError). Without this
+          // the throw escapes past the barrierDismissible: false dialog to the
+          // method-level catch, whose snackbar renders behind the modal — the
+          // dialog would sit on "Connecting…" forever. Do not rethrow: falling
+          // through to the share block below is intended.
+          status.value = 'Stopped at $count dives: $e\n'
+              'Re-run — it skips what is already saved.';
         } finally {
           await sub.cancel();
           await progressSub.cancel();
           // Flush whatever the dive stream left buffered — on the success path
-          // and on a thrown sync() (pre-connection errors still propagate).
+          // and on the caught-failure path above.
           if (pending.isNotEmpty) {
             outFile.writeAsStringSync(pending.toString(), mode: FileMode.append);
           }
