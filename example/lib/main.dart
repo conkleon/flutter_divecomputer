@@ -125,9 +125,22 @@ class _MyAppState extends State<MyApp> {
           barrierDismissible: false,
           builder: (_) => AlertDialog(
             title: const Text('Bluetooth download'),
-            content: ValueListenableBuilder<String>(
-              valueListenable: status,
-              builder: (_, s, __) => Text(s),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ValueListenableBuilder<String>(
+                  valueListenable: status,
+                  builder: (_, s, __) => Text(s),
+                ),
+                const SizedBox(height: 16),
+                StreamBuilder<SyncProgress>(
+                  stream: dc.syncProgress,
+                  builder: (_, snap) {
+                    final f = snap.data?.fraction;
+                    return LinearProgressIndicator(value: f);
+                  },
+                ),
+              ],
             ),
             actions: [
               TextButton(
@@ -159,51 +172,57 @@ class _MyAppState extends State<MyApp> {
           }
         }
         var count = known.length;
-        final startCount = count;
         var lastDrained = DateTime.now();
         final pending = StringBuffer();
+        status.value = known.isEmpty
+            ? 'Opening connection…\nKeep the Petrel on its BT screen, screen on.'
+            : 'Resuming — ${known.length} dives already saved.\n'
+                'Opening connection…';
+        final sub = dc.diveStream.listen((dive) {
+          count++;
+          pending.writeln(jsonEncode(dive.toJson()));
+          // Flush every ~2s or every 20 dives — cheap, and bounds loss.
+          final now = DateTime.now();
+          if (count % 20 == 0 ||
+              now.difference(lastDrained) > const Duration(seconds: 2)) {
+            outFile.writeAsStringSync(pending.toString(), mode: FileMode.append);
+            pending.clear();
+            lastDrained = now;
+          }
+        });
+        final progressSub = dc.syncProgress.listen((p) {
+          status.value = switch (p.phase) {
+            SyncPhase.connecting =>
+              'Connecting…\nKeep the Petrel on its BT screen.',
+            SyncPhase.reading => p.fraction != null
+                ? 'Downloading… ${(p.fraction! * 100).toStringAsFixed(0)}%  '
+                    '(${p.divesParsed} dives)'
+                : 'Downloading… ${p.divesParsed} dives',
+            SyncPhase.parsing => 'Downloading… ${p.divesParsed} dives saved\n'
+                '→ ${outFile.path}',
+            SyncPhase.done => 'Finishing…',
+          };
+        });
         try {
-          status.value = known.isEmpty
-              ? 'Opening connection…\nKeep the Petrel on its BT screen, screen on.'
-              : 'Resuming — ${known.length} dives already saved.\n'
-                  'Opening connection…';
-          final dives = await dc.download(
-            computer,
-            ComputerTransport.bluetooth,
-            null, // no lastFingerprint — we want the whole log
-            picked.address,
-            (dive) {
-              count++;
-              pending.writeln(jsonEncode(dive.toJson()));
-              // Flush every ~2s or every 20 dives — cheap, and bounds loss.
-              final now = DateTime.now();
-              if (count % 20 == 0 ||
-                  now.difference(lastDrained) > const Duration(seconds: 2)) {
-                outFile.writeAsStringSync(pending.toString(),
-                    mode: FileMode.append);
-                pending.clear();
-                lastDrained = now;
-              }
-              status.value = 'Downloading… $count dives saved\n'
-                  'latest: ${dive.dateTime ?? dive.hash}\n'
-                  '→ ${outFile.path}';
-            },
-            known, // knownFingerprints — skip re-parsing these
-          );
+          final result = await dc.sync(SyncRequest(
+            computer: computer,
+            transport: ComputerTransport.bluetooth,
+            endpoint: picked.address,
+            knownFingerprints: known,
+          ));
           if (pending.isNotEmpty) {
             outFile.writeAsStringSync(pending.toString(), mode: FileMode.append);
           }
-          status.value = 'Done — $count dives total '
-              '(${count - startCount} new this run, ${dives.length} parsed).\n'
-              'Saved to:\n${outFile.path}';
-        } catch (e) {
-          if (pending.isNotEmpty) {
-            outFile.writeAsStringSync(pending.toString(), mode: FileMode.append);
-          }
-          status.value = 'Stopped at $count dives '
-              '(${count - startCount} new this run): $e\n'
-              'Saved to:\n${outFile.path}\n'
-              'Re-run — it skips the dives already saved and continues.';
+          status.value = switch (result.status) {
+            SyncStatus.failed => 'Stopped at $count dives: ${result.error}\n'
+                'Re-run — it skips what is already saved.',
+            _ => 'Done — $count dives '
+                '(${result.divesParsed} new, ${result.divesSkipped} skipped).\n'
+                'Saved to:\n${outFile.path}',
+          };
+        } finally {
+          await sub.cancel();
+          await progressSub.cancel();
         }
         // Offer to share the file regardless of success/failure.
         if (await outFile.exists() && await outFile.length() > 0) {
@@ -244,10 +263,15 @@ class _MyAppState extends State<MyApp> {
               );
         if (serialPort == null) return; // dialog dismissed
       }
-      final dives = await dc.download(
-          computer, transport, 'exampleFingerprint', serialPort);
-      messenger.showSnackBar(
-          SnackBar(content: Text('Downloaded ${dives.length} dives')));
+      final result = await dc.sync(SyncRequest(
+        computer: computer,
+        transport: transport,
+        endpoint: serialPort,
+        lastFingerprint: 'exampleFingerprint',
+      ));
+      messenger.showSnackBar(SnackBar(
+          content: Text('Synced ${result.divesParsed} dives '
+              '(${result.status.name})')));
     } catch (e) {
       messenger.showSnackBar(SnackBar(content: Text('Download failed: $e')));
     }
@@ -432,32 +456,34 @@ class _BleDebugScreenState extends State<BleDebugScreen> {
     }
     setState(() => _busy = true);
     try {
-      _print('Connecting to ${device.name}...');
-      await dc.connectBle(device);
-      if (!mounted) return;
       // An untimed LE scan running alongside a GATT transfer degrades
       // throughput/stability on Android. Stopping it clears universal_ble's
       // seen-device cache, so tell the user the found list is now stale.
+      // sync() owns the connection lifecycle now, so stop the scan first.
       await _scanSub?.cancel();
       _scanSub = null;
       _print('Scan stopped for transfer. Re-scan to connect again.');
-      _print('Connected. Downloading full dive log as $computer ...');
-      final dives = await dc.download(computer, ComputerTransport.ble);
+      _print('Connecting + downloading ${device.name} as $computer ...');
+      final dives = <Dive>[];
+      final sub = dc.diveStream.listen(dives.add);
+      try {
+        final result = await dc.sync(SyncRequest(
+          computer: computer,
+          transport: ComputerTransport.ble,
+          endpoint: device.id,
+        ));
+        _print('Sync ${result.status.name}: ${result.divesParsed} dives');
+      } finally {
+        await sub.cancel();
+      }
       if (!mounted) return;
       setState(() => _dives = dives);
-      _print('Downloaded ${dives.length} dives — full dump follows');
       _printAll([
         for (final dive in dives) ...describeDiveVerbose(dive),
       ]);
     } catch (e) {
       _print('ERROR: $e');
     } finally {
-      try {
-        await dc.disconnectBle();
-        _print('Disconnected.');
-      } catch (e) {
-        _print('Disconnect error (ignored): $e');
-      }
       if (mounted) setState(() => _busy = false);
     }
   }
