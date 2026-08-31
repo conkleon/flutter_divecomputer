@@ -178,14 +178,37 @@ void main() {
     expect(source, isNot(contains('_diveController.addError')));
   });
 
-  test('an isolate/transport error routes to handleError, not a stream error',
-      () {
-    expect(source, contains('_activeRun?.handleError'));
-    // Both the reply port and the isolate onError port must feed the run.
+  test('a sync failure routes to handleError, not a stream error', () {
+    // The background isolate wraps a throw out of DiveComputerFfi.sync in
+    // _SyncFailed so the main isolate can attribute it to the run.
+    expect(source, contains('class _SyncFailed'));
+    expect(source, contains('sendPort.send(_SyncFailed('));
     expect(
-      '_activeRun?.handleError'.allMatches(source).length,
-      greaterThanOrEqualTo(2),
+      RegExp(r'is _SyncFailed\)[^;]*_activeRun\?\.handleError').hasMatch(source),
+      isTrue,
+      reason: 'the _SyncFailed branch must fail the active run',
     );
+    // Isolate death (onError port) is genuinely fatal for the run too.
+    expect(
+      RegExp(r'_errorPort\.listen\(.*?_activeRun\?\.handleError', dotAll: true)
+          .hasMatch(source),
+      isTrue,
+    );
+  });
+
+  test('an unattributed port error does NOT fail the active sync run', () {
+    // One reply port, no correlation id: a bare Error/Exception may have come
+    // from a concurrent serialPorts()/bluetoothDevices() call. Failing the run
+    // there would also release the concurrency guard mid-transfer (serial
+    // syncs have no bridge, so _cleanupRun() would run immediately).
+    final branch = RegExp(
+            r'\} else if \(message is Error \|\| message is Exception\) \{.*?\r?\n\s*\} else \{',
+            dotAll: true)
+        .firstMatch(source)
+        ?.group(0);
+    expect(branch, isNotNull,
+        reason: 'the generic error branch shape changed — re-check this guard');
+    expect(branch, isNot(contains('_activeRun?.')));
   });
 
   test('_spawnIsolate handles DiveComputerMethod.sync and wires the callbacks',

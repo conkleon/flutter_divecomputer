@@ -57,11 +57,23 @@ class _DeviceInfoMsg {
   final int model, firmware, serial;
 }
 
-/// Extends (rather than implements) [DiveComputerInterface]. The deprecated
-/// `download`/`connectBle`/`disconnectBle` members are overridden below as thin
-/// compatibility shims over [sync]; everything else the interface declares is
-/// implemented here directly.
-class DiveComputer extends DiveComputerInterface {
+/// A throw out of [DiveComputerFfi.sync] on the background isolate. The
+/// singleton has ONE reply port and bare errors carry no correlation id, so a
+/// bare `Error`/`Exception` on that port cannot be attributed to the sync run
+/// — it may just as well have come from a concurrent `serialPorts()` or
+/// `bluetoothDevices()` call. Wrapping the sync failure makes it addressable.
+class _SyncFailed {
+  const _SyncFailed(this.error);
+  final Object error;
+}
+
+/// Implements (rather than extends) [DiveComputerInterface]: every member of
+/// the interface has a `throw UnimplementedError()` body, so inheriting would
+/// turn a future interface addition into a runtime throw instead of a compile
+/// error here. The deprecated `download`/`connectBle`/`disconnectBle` members
+/// are provided below as thin compatibility shims over [sync] — `@override`
+/// and `@Deprecated` both work fine under `implements`.
+class DiveComputer implements DiveComputerInterface {
   late ReceivePort _receivePort, _errorPort;
   late Completer<SendPort> _sendPort;
 
@@ -161,8 +173,13 @@ class DiveComputer extends DiveComputerInterface {
         if (_bleBridgeReleased?.isCompleted == false) {
           _bleBridgeReleased?.complete();
         }
+      } else if (message is _SyncFailed) {
+        _activeRun?.handleError(message.error);
       } else if (message is Error || message is Exception) {
-        _activeRun?.handleError(message);
+        // Deliberately does NOT touch _activeRun: an error on this port is
+        // unattributed, and failing the in-flight sync because an unrelated
+        // enumeration call threw would also release the concurrency guard
+        // mid-transfer. Sync failures arrive as _SyncFailed above.
         if (_supportedComputers?.isCompleted == false) {
           _supportedComputers?.completeError(message);
         }
@@ -186,6 +203,9 @@ class DiveComputer extends DiveComputerInterface {
           ? (message[0].toString(), message[1].toString())
           : (message.toString(), '');
       final error = RemoteError(desc, trace);
+      // Unlike the generic branch on _receivePort, this one DOES fail the
+      // active run: an uncaught error here means the isolate itself died, so
+      // the transfer is genuinely dead too — no attribution question.
       _activeRun?.handleError(error);
       if (_supportedComputers?.isCompleted == false) {
         _supportedComputers?.completeError(error);
@@ -519,6 +539,14 @@ _spawnIsolate(SendPort sendPort) {
               address: address,
             );
             sendPort.send(result);
+          } catch (e) {
+            // Report as _SyncFailed rather than letting the outer catch send a
+            // bare error: the main isolate cannot attribute a bare error to
+            // this run, so it would leave the sync hanging (and, for a
+            // bridged transfer, never release the bridge).
+            // initializationError first, matching the outer catch: if the FFI
+            // never initialized, that is the real cause.
+            sendPort.send(_SyncFailed(initializationError ?? e));
           } finally {
             DiveComputerFfi.diveCallback = null;
             DiveComputerFfi.progressCallback = null;
