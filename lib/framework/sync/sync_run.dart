@@ -55,7 +55,21 @@ class SyncRun {
   void handleResult(SyncResult result) {
     if (_completer.isCompleted) return;
     _emit(SyncPhase.done, 0, 0, force: true);
-    _completer.complete(result);
+    final info = _deviceInfo;
+    _completer.complete(info == null
+        ? result
+        : SyncResult(
+            status: result.status,
+            divesParsed: result.divesParsed,
+            divesSkipped: result.divesSkipped,
+            fingerprints: result.fingerprints,
+            error: result.error,
+            deviceInfo: DeviceInfo(
+              model: info.model,
+              firmware: info.firmware,
+              serial: info.serial,
+            ),
+          ));
   }
 
   void handleError(Object error) {

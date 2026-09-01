@@ -62,6 +62,18 @@ class SyncProgress {
 /// How a sync ended.
 enum SyncStatus { completed, stoppedAtKnownDive, failed }
 
+/// Device identity + firmware, reported once per run by libdivecomputer's
+/// `DC_EVENT_DEVINFO`. Absent when the device/backend does not emit it.
+class DeviceInfo {
+  const DeviceInfo({
+    required this.model,
+    required this.firmware,
+    required this.serial,
+  });
+
+  final int model, firmware, serial;
+}
+
 /// The outcome of a [SyncRequest]. Dives themselves arrive only on
 /// `DiveComputer.diveStream`; this carries counts and identifiers.
 class SyncResult {
@@ -71,6 +83,7 @@ class SyncResult {
     required this.divesSkipped,
     required this.fingerprints,
     this.error,
+    this.deviceInfo,
   });
 
   final SyncStatus status;
@@ -91,4 +104,8 @@ class SyncResult {
   /// message `String` rather than the original exception object — only
   /// sendable values cross the isolate port.
   final Object? error;
+
+  /// Device identity for this run, or null if `DC_EVENT_DEVINFO` did not fire.
+  /// A `serial` of 0 means "reported but unset" — callers treat it as absent.
+  final DeviceInfo? deviceInfo;
 }

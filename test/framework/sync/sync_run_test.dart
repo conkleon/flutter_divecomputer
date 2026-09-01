@@ -98,6 +98,35 @@ void main() {
     expect(r.run.deviceInfo, (model: 3, firmware: 47, serial: 12345));
   });
 
+  test('handleResult folds a prior deviceInfo into the completed result',
+      () async {
+    final r = _Rec();
+    r.run.handleDeviceInfo(3, 47, 12345);
+    r.run.handleResult(const SyncResult(
+      status: SyncStatus.completed,
+      divesParsed: 0,
+      divesSkipped: 0,
+      fingerprints: [],
+    ));
+    final res = await r.run.result;
+    expect(res.deviceInfo, isNotNull);
+    expect(res.deviceInfo!.model, 3);
+    expect(res.deviceInfo!.firmware, 47);
+    expect(res.deviceInfo!.serial, 12345);
+    expect(res.status, SyncStatus.completed);
+  });
+
+  test('handleResult without device info leaves deviceInfo null', () async {
+    final r = _Rec();
+    r.run.handleResult(const SyncResult(
+      status: SyncStatus.completed,
+      divesParsed: 0,
+      divesSkipped: 0,
+      fingerprints: [],
+    ));
+    expect((await r.run.result).deviceInfo, isNull);
+  });
+
   test('start() emits exactly one immediate connecting progress', () {
     final r = _Rec();
     expect(r.progress, isEmpty);
