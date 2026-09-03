@@ -1,0 +1,825 @@
+# Mares Sirius support via libdivecomputer 0.9.0 — Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Make the Mares Sirius (and other devices added since the vendored snapshot) downloadable over BLE on Android and Windows by bumping the vendored `libdivecomputer` to the `0.9.0` release and rebuilding its native binaries.
+
+**Architecture:** Replace the pre-release `0.9.0-devel` vendored native libs with `0.9.0` release builds produced by a new, committed `native/build/` recipe that runs in WSL (Windows DLL via MinGW cross-compile, four Android `.so` via the Android NDK). Swap the vendored headers to match, regenerate the `ffigen` FFI bindings, and apply the single source change the header delta forces (`dc_descriptor_iterator` → `dc_descriptor_iterator_new`). Point the existing `maresBluelink` BLE profile's `productHint` at `Sirius`. Everything else — `supportedComputers` enumeration, transport mapping — already flows automatically.
+
+**Tech Stack:** Flutter plugin (Dart + `dart:ffi`), `ffigen` for bindings, C library `libdivecomputer` (autotools, pre-generated `configure`), WSL Ubuntu 22.04, MinGW-w64 cross toolchain, Android NDK r27c, `patchelf`.
+
+**Spec:** `docs/superpowers/specs/2026-09-03-mares-sirius-libdivecomputer-0.9.0-design.md` — read it alongside this plan.
+
+## Global Constraints
+
+- **libdivecomputer release:** `0.9.0`, tarball `https://libdivecomputer.org/releases/libdivecomputer-0.9.0.tar.gz`, sha256 `a7b80b9083a2113a43280ee7b51d48d66ea5a779fc3fee57df7c451da0251c65`.
+- **Rebuild these and only these binaries:** `native/lib/windows_x64/libdivecomputer-0.dll`; `native/lib/android/{arm64-v8a,armeabi-v7a,x86,x86_64}/libdivecomputer.so`. **Keep byte-for-byte:** `native/lib/windows_x64/libusb-1.0.dll`, `native/lib/windows_x64/libhidapi-0.dll`, everything under `native/lib/macos/`.
+- **Windows DLL import table must stay:** `libhidapi-0.dll`, `libusb-1.0.dll`, `msvcrt.dll`, `WS2_32.dll`, `ADVAPI32.dll`, `KERNEL32.dll` (baseline recorded in Task 1). It is a MinGW build (`msvcrt`), never MSVC.
+- **Android `.so`:** SONAME must be exactly `libdivecomputer.so` (no version suffix); built `--without-libusb --without-hidapi`; linked `-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384` (Android 15+ 16 KB pages); `NEEDED` list limited to `libc.so`, `libm.so`, `libstdc++.so`, `libdl.so`; `minSdkVersion`/`ANDROID_API` = `21`.
+- **Vendored headers:** the repo stores them **CRLF**; the tarball ships **LF** — convert to CRLF on copy so the git diff is semantic-only.
+- **Do not `git push`** unless the user asks. Commit locally after every task.
+- **Do not run `dart format` / repo-wide formatters** (version-skew debt is handled elsewhere — see the plugin-redesign roadmap).
+- **Build environment:** everything native builds in **WSL**, inside the WSL filesystem (`~/…`), copying only final artefacts to `/mnt/d/Documents/GitHub/nautilus/flutter_divecomputer/native/lib/…`. Building directly on `/mnt/d` trips libtool on path/case issues.
+- **Commit trailers:** end every commit message with
+  `Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>` and
+  `Claude-Session: https://claude.ai/code/session_01BVtC1s9FpHrgniQGVHp2h3`.
+
+---
+
+## File Structure
+
+**New — `native/build/` (the reproducible recipe):**
+
+| File | Responsibility |
+|---|---|
+| `native/build/README.md` | Prerequisites, the one-time `apt` install, how to run each script, how to verify, how to bump the version next time. |
+| `native/build/libdivecomputer.env` | Single source of truth: tarball URL + sha256, NDK URL + sha256 + dir name, `ANDROID_API`, the exact Sirius descriptor row string used by the sanity checks. Sourced by the other scripts. |
+| `native/build/lib.sh` | Shared shell helpers: `die`, `log`, `need_cmd`, `fetch_and_verify <url> <sha256> <dest>`, `assert_sirius_in_source <srcdir>`. Sourced, not executed. |
+| `native/build/fetch.sh` | Download + sha256-verify + extract the libdivecomputer tarball into `native/build/.work/src/`. Idempotent. |
+| `native/build/build-android.sh` | Cross-compile all four ABIs; install + `patchelf` + strip into `native/lib/android/<abi>/libdivecomputer.so`; run Android sanity checks. |
+| `native/build/build-windows.sh` | Cross-compile the DLL against the existing vendored `libusb`/`hidapi` DLLs; install + strip into `native/lib/windows_x64/libdivecomputer-0.dll`; run Windows sanity checks. |
+| `native/build/.gitignore` | Ignores `.work/`. |
+
+**Modified:**
+
+| File | Change |
+|---|---|
+| `native/include/libdivecomputer/*.h` | Replaced with `0.9.0` release headers (CRLF). |
+| `native/lib/windows_x64/libdivecomputer-0.dll` | Rebuilt (binary, committed). |
+| `native/lib/android/*/libdivecomputer.so` (×4) | Rebuilt (binary, committed). |
+| `lib/framework/dive_computer_ffi_bindings_generated.dart` | Regenerated by `ffigen`. |
+| `lib/framework/dive_computer_ffi.dart` | `dc_descriptor_iterator(iterator)` → `dc_descriptor_iterator_new(iterator, ffi.nullptr)` (~line 164). |
+| `lib/types/ble_profile.dart` | `maresBluelink.productHint` `'Genius'` → `'Sirius'`; dartdoc rewrites on `maresBluelink` and `shearwaterPerdix3`. |
+| `test/types/ble_profile_test.dart` | Update the two `productHint` expectations; add a `'Mares Sirius'` scan-match assertion (partly there already). |
+| `test/framework/dive_computer_ffi_descriptor_test.dart` | **New** — source-guard test for the iterator migration. |
+| `ffigen.yaml` | Only if the regen does not surface `dc_descriptor_iterator_new` without it (add `descriptor.h` to `entry-points`). |
+| `CHANGELOG.md` | New `## Unreleased` bullet. |
+| `README.md` | libdivecomputer `0.9.0`; `native/build/` pointer; macOS caveat. |
+
+**Explicitly unchanged (verify, don't touch):** `windows/CMakeLists.txt` (DLL filename stable), `android/build.gradle` (`jniLibs.srcDirs` unchanged), `lib/framework/dive_computer_isolate.dart`, `lib/framework/bridged_transport.dart`, `lib/types/computer.dart`, `lib/framework/utils/transports_bitmask.dart`, `native/lib/macos/*`.
+
+---
+
+## Task 1: `native/build/` recipe scaffolding + fetch script
+
+**Files:**
+- Create: `native/build/.gitignore`, `native/build/README.md`, `native/build/libdivecomputer.env`, `native/build/lib.sh`, `native/build/fetch.sh`
+- Test: manual — run `fetch.sh` in WSL and check its assertions
+
+**Interfaces:**
+- Produces: `native/build/.work/src/libdivecomputer-0.9.0/` (extracted source tree) for Tasks 2 and 3; `native/build/libdivecomputer.env` variables `LDC_VERSION`, `LDC_TARBALL_URL`, `LDC_TARBALL_SHA256`, `NDK_URL`, `NDK_SHA256`, `NDK_DIR`, `ANDROID_API`, `SIRIUS_ROW`; helpers in `lib.sh`: `die msg`, `log msg`, `need_cmd name`, `fetch_and_verify url sha256 dest`, `assert_sirius_in_source srcdir`.
+
+- [ ] **Step 1: One-time WSL toolchain install (manual — ask the user)**
+
+Tell the user to run this once (it needs `sudo`):
+
+```
+wsl sudo apt-get update && wsl sudo apt-get install -y \
+  mingw-w64 mingw-w64-tools patchelf unzip file binutils
+```
+
+`gcc`, `make`, `curl`, `sed`, `tar` are already present on the WSL image. Wait for the user to confirm before continuing.
+
+- [ ] **Step 2: Create `native/build/.gitignore`**
+
+```
+.work/
+```
+
+- [ ] **Step 3: Create `native/build/libdivecomputer.env`**
+
+```sh
+# Sourced by fetch.sh / build-android.sh / build-windows.sh.
+# Bump these five values (and re-run all three scripts) to update libdivecomputer.
+LDC_VERSION=0.9.0
+LDC_TARBALL_URL=https://libdivecomputer.org/releases/libdivecomputer-0.9.0.tar.gz
+LDC_TARBALL_SHA256=a7b80b9083a2113a43280ee7b51d48d66ea5a779fc3fee57df7c451da0251c65
+
+# Android NDK (Linux). Verify NDK_SHA256 against the value printed by the
+# download step the first time, or from https://developer.android.com/ndk/downloads
+NDK_URL=https://dl.google.com/android/repository/android-ndk-r27c-linux.zip
+NDK_SHA256=__FILL_FROM_TASK_1_STEP_6__
+NDK_DIR=android-ndk-r27c
+
+ANDROID_API=21
+
+# Exact descriptor row the sanity checks grep for in src/descriptor.c
+SIRIUS_ROW='{"Mares", "Sirius",            DC_FAMILY_MARES_ICONHD , 0x2F, DC_TRANSPORT_BLE, dc_filter_mares}'
+```
+
+- [ ] **Step 4: Create `native/build/lib.sh`**
+
+```sh
+# Shared helpers. Source this; do not execute.
+set -euo pipefail
+
+die()  { echo "FATAL: $*" >&2; exit 1; }
+log()  { echo ">>> $*" >&2; }
+need_cmd() { command -v "$1" >/dev/null 2>&1 || die "missing command: $1"; }
+
+# fetch_and_verify <url> <sha256> <dest-file>
+fetch_and_verify() {
+  local url="$1" want="$2" dest="$3"
+  if [ -f "$dest" ] && [ "$(sha256sum "$dest" | cut -d' ' -f1)" = "$want" ]; then
+    log "cached + verified: $dest"; return 0
+  fi
+  log "downloading $url"
+  curl -fSL -o "$dest" "$url"
+  local got; got="$(sha256sum "$dest" | cut -d' ' -f1)"
+  [ "$got" = "$want" ] || die "sha256 mismatch for $dest: got $got want $want"
+  log "verified: $dest"
+}
+
+# assert_sirius_in_source <srcdir>
+assert_sirius_in_source() {
+  local srcdir="$1"
+  grep -qF "$SIRIUS_ROW" "$srcdir/src/descriptor.c" \
+    || die "Sirius descriptor row not found in $srcdir/src/descriptor.c"
+  log "source contains the Mares Sirius descriptor row"
+}
+```
+
+- [ ] **Step 5: Create `native/build/fetch.sh`**
+
+```sh
+#!/usr/bin/env bash
+# Download + verify + extract libdivecomputer into native/build/.work/src/.
+HERE="$(cd "$(dirname "$0")" && pwd)"
+. "$HERE/lib.sh"
+. "$HERE/libdivecomputer.env"
+need_cmd curl; need_cmd tar; need_cmd sha256sum
+
+WORK="$HERE/.work"
+mkdir -p "$WORK/src"
+TARBALL="$WORK/libdivecomputer-$LDC_VERSION.tar.gz"
+
+fetch_and_verify "$LDC_TARBALL_URL" "$LDC_TARBALL_SHA256" "$TARBALL"
+
+SRC="$WORK/src/libdivecomputer-$LDC_VERSION"
+rm -rf "$SRC"
+tar -xzf "$TARBALL" -C "$WORK/src"
+[ -x "$SRC/configure" ] || die "expected a pre-generated ./configure in $SRC"
+assert_sirius_in_source "$SRC"
+log "extracted + validated: $SRC"
+```
+
+- [ ] **Step 6: Run the fetch script and capture the NDK hash**
+
+Run:
+```
+wsl.exe -e bash -lc 'cd /mnt/d/Documents/GitHub/nautilus/flutter_divecomputer/native/build && bash fetch.sh'
+```
+Expected output ends with `>>> extracted + validated: …/libdivecomputer-0.9.0`.
+
+Then download the NDK once and record its hash:
+```
+wsl.exe -e bash -lc 'cd ~ && curl -fSL -o ndk.zip "$(. /mnt/d/Documents/GitHub/nautilus/flutter_divecomputer/native/build/libdivecomputer.env; echo $NDK_URL)" && sha256sum ndk.zip'
+```
+Paste the printed sha256 into `libdivecomputer.env` in place of `__FILL_FROM_TASK_1_STEP_6__`. Move the verified zip to `native/build/.work/ndk.zip` so `build-android.sh` reuses it:
+```
+wsl.exe -e bash -lc 'mv ~/ndk.zip /mnt/d/Documents/GitHub/nautilus/flutter_divecomputer/native/build/.work/ndk.zip'
+```
+
+- [ ] **Step 7: Create `native/build/README.md`**
+
+Write a README covering, in prose + copy-pasteable commands:
+- **Prerequisites:** WSL Ubuntu; the one-time `apt-get install` line from Step 1; ~6 GB free in the WSL home for the NDK + build trees.
+- **What it produces:** the exact five binary paths from Global Constraints, and that nothing else in `native/` is touched.
+- **How to run:** `bash fetch.sh` then `bash build-android.sh` then `bash build-windows.sh`, all via `wsl.exe -e bash -lc 'cd …/native/build && bash <script>'`.
+- **How to verify a result:** each script self-checks and exits non-zero on failure; the git diff of `native/lib/` is the review surface; re-run `flutter test` afterwards.
+- **The recorded Windows DLL import baseline** (fill in from Step 8 below), so a future bump can diff against it.
+- **Bumping the version:** edit the five values at the top of `libdivecomputer.env`, re-run all three scripts, regenerate the ffigen bindings (`flutter pub run ffigen --config ffigen.yaml`), review the binding diff for renamed/removed symbols, run `flutter analyze && flutter test`.
+- **Known gap:** macOS `.dylib` is not rebuilt here; devices added after the last macOS build (Mares Sirius included) will not resolve on macOS.
+
+- [ ] **Step 8: Record the current Windows DLL import baseline in the README**
+
+Run:
+```
+wsl.exe -e bash -lc 'objdump -p /mnt/d/Documents/GitHub/nautilus/flutter_divecomputer/native/lib/windows_x64/libdivecomputer-0.dll | grep -i "DLL Name" | sort'
+```
+Paste the list into the README under a "Windows DLL import baseline (libdivecomputer 0.9.0-devel snapshot)" heading.
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add native/build/
+git commit -m "build: add native/build/ recipe for vendoring libdivecomputer
+
+fetch.sh downloads + sha256-verifies + extracts the libdivecomputer
+0.9.0 release tarball and asserts the Mares Sirius descriptor row is
+present. Shared helpers in lib.sh; version pinned in libdivecomputer.env.
+build-android.sh / build-windows.sh follow in the next tasks.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01BVtC1s9FpHrgniQGVHp2h3"
+```
+
+---
+
+## Task 2: Android `.so` build script + rebuilt binaries
+
+**Files:**
+- Create: `native/build/build-android.sh`
+- Modify (binary): `native/lib/android/arm64-v8a/libdivecomputer.so`, `native/lib/android/armeabi-v7a/libdivecomputer.so`, `native/lib/android/x86/libdivecomputer.so`, `native/lib/android/x86_64/libdivecomputer.so`
+- Test: the script's own sanity block
+
+**Interfaces:**
+- Consumes: `native/build/.work/src/libdivecomputer-0.9.0/` and `native/build/.work/ndk.zip` from Task 1; `libdivecomputer.env`; `lib.sh`.
+- Produces: four rebuilt `.so` files (nothing later consumes them programmatically; Task 7 verifies on-device).
+
+- [ ] **Step 1: Write `native/build/build-android.sh`**
+
+```sh
+#!/usr/bin/env bash
+HERE="$(cd "$(dirname "$0")" && pwd)"
+. "$HERE/lib.sh"
+. "$HERE/libdivecomputer.env"
+need_cmd unzip; need_cmd patchelf; need_cmd readelf; need_cmd make
+
+WORK="$HERE/.work"
+SRC="$WORK/src/libdivecomputer-$LDC_VERSION"
+[ -x "$SRC/configure" ] || die "run fetch.sh first"
+REPO="$(cd "$HERE/../.." && pwd)"
+
+# --- NDK ---
+NDK="$WORK/$NDK_DIR"
+if [ ! -d "$NDK" ]; then
+  [ -f "$WORK/ndk.zip" ] || fetch_and_verify "$NDK_URL" "$NDK_SHA256" "$WORK/ndk.zip"
+  [ "$(sha256sum "$WORK/ndk.zip" | cut -d' ' -f1)" = "$NDK_SHA256" ] || die "ndk.zip sha256 mismatch"
+  log "unzipping NDK"; unzip -q "$WORK/ndk.zip" -d "$WORK"
+fi
+TOOL="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+[ -d "$TOOL" ] || die "NDK toolchain not at $TOOL"
+
+# abi | configure --host | clang triple prefix
+TARGETS="
+arm64-v8a|aarch64-linux-android|aarch64-linux-android
+armeabi-v7a|arm-linux-androideabi|armv7a-linux-androideabi
+x86|i686-linux-android|i686-linux-android
+x86_64|x86_64-linux-android|x86_64-linux-android
+"
+
+echo "$TARGETS" | while IFS='|' read -r ABI HOST CLANG; do
+  [ -n "$ABI" ] || continue
+  log "=== building $ABI ==="
+  BD="$WORK/build-android-$ABI"
+  rm -rf "$BD"; mkdir -p "$BD"; cd "$BD"
+
+  export CC="$TOOL/${CLANG}${ANDROID_API}-clang"
+  export AR="$TOOL/llvm-ar" RANLIB="$TOOL/llvm-ranlib" STRIP="$TOOL/llvm-strip"
+  [ -x "$CC" ] || die "no clang at $CC"
+
+  "$SRC/configure" --host="$HOST" \
+    --disable-static --enable-shared --disable-dependency-tracking \
+    --without-libusb --without-hidapi \
+    CFLAGS="-Os -fPIC -DNDEBUG" \
+    LDFLAGS="-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384"
+  make -j"$(nproc)"
+
+  OUT="$REPO/native/lib/android/$ABI/libdivecomputer.so"
+  REAL="$(readlink -f src/.libs/libdivecomputer.so)"
+  [ -f "$REAL" ] || die "no built .so for $ABI"
+  cp "$REAL" "$OUT"
+  patchelf --set-soname libdivecomputer.so "$OUT"
+  "$STRIP" --strip-unneeded "$OUT"
+
+  # --- sanity ---
+  SONAME="$(readelf -d "$OUT" | sed -n 's/.*SONAME.*\[\(.*\)\].*/\1/p')"
+  [ "$SONAME" = "libdivecomputer.so" ] || die "$ABI SONAME is '$SONAME', want libdivecomputer.so"
+  NEEDED="$(readelf -d "$OUT" | sed -n 's/.*NEEDED.*\[\(.*\)\].*/\1/p' | sort | tr '\n' ' ')"
+  case "$NEEDED" in
+    *libusb*|*hidapi*) die "$ABI links a forbidden lib: $NEEDED" ;;
+  esac
+  log "$ABI NEEDED: $NEEDED"
+  # Mares Sirius backend present (mares_iconhd is the family; model 0x2F is data)
+  "$TOOL/llvm-nm" -D "$OUT" | grep -q mares_iconhd_device_open \
+    || die "$ABI: mares_iconhd_device_open not exported"
+  # 16 KB alignment: every PT_LOAD Align must be >= 0x4000
+  readelf -lW "$OUT" | awk '/LOAD/ { a=$NF; if (a=="0x1000") { print "unaligned LOAD in '"$ABI"'"; exit 1 } }' \
+    || die "$ABI: found a 4 KB-aligned LOAD segment"
+  log "$ABI OK"
+done
+
+log "all four ABIs built + installed"
+```
+
+- [ ] **Step 2: Run it**
+
+Run:
+```
+wsl.exe -e bash -lc 'cd /mnt/d/Documents/GitHub/nautilus/flutter_divecomputer/native/build && bash build-android.sh'
+```
+Expected: ends with `>>> all four ABIs built + installed`, no `FATAL:`. Takes several minutes (NDK unzip + 4 builds).
+
+- [ ] **Step 3: Eyeball the diff**
+
+Run: `git status --porcelain native/lib/android` — expect four `M` lines. Run `git diff --stat native/lib/android` — sizes shift but stay the same order of magnitude (current arm64 `.so` is ~480 KB).
+
+- [ ] **Step 4: Confirm the plugin still analyzes (bindings unchanged yet)**
+
+Run: `flutter analyze`
+Expected: no new errors (this task changes no Dart).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add native/build/build-android.sh native/lib/android/
+git commit -m "build(android): rebuild libdivecomputer .so from 0.9.0, 16 KB aligned
+
+Cross-compiles all four ABIs with NDK r27c against the 0.9.0 release
+(--without-libusb --without-hidapi, SONAME forced to libdivecomputer.so
+via patchelf). Adds -Wl,-z,max-page-size=16384 so the .so files satisfy
+Android 15+ 16 KB page alignment (previously a deferred item). Script
+self-checks SONAME, NEEDED, the mares_iconhd export, and LOAD alignment.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01BVtC1s9FpHrgniQGVHp2h3"
+```
+
+---
+
+## Task 3: Windows `.dll` build script + rebuilt binary
+
+**Files:**
+- Create: `native/build/build-windows.sh`
+- Modify (binary): `native/lib/windows_x64/libdivecomputer-0.dll`
+- Test: the script's own sanity block
+
+**Interfaces:**
+- Consumes: `native/build/.work/src/libdivecomputer-0.9.0/` from Task 1; the existing vendored `native/lib/windows_x64/libusb-1.0.dll` + `libhidapi-0.dll`; `libdivecomputer.env`; `lib.sh`.
+- Produces: rebuilt `native/lib/windows_x64/libdivecomputer-0.dll`.
+
+- [ ] **Step 1: Add libusb/hidapi header URLs to `libdivecomputer.env`**
+
+Append:
+```sh
+# Headers only — we link against the vendored DLLs, so ABI cannot drift.
+LIBUSB_TARBALL_URL=https://github.com/libusb/libusb/releases/download/v1.0.27/libusb-1.0.27.tar.bz2
+LIBUSB_TARBALL_SHA256=e8f18a7a36ecbb11fb820bd71540350d8f61bcd9db0d2e8c18a6fb80b214a3de
+HIDAPI_TARBALL_URL=https://github.com/libusb/hidapi/archive/refs/tags/hidapi-0.14.0.tar.gz
+HIDAPI_TARBALL_SHA256=8b9a83b52959a0dd23f8ec36e1cc9e626b7f6f70edb2a0f83bb8f6de6de1c3f5
+```
+> If either sha256 fails at build time, refresh it from the project's release page and update this file — the headers just need to compile-match the vendored DLL's ABI (libusb 1.0.x, hidapi 0.x are stable).
+
+- [ ] **Step 2: Write `native/build/build-windows.sh`**
+
+```sh
+#!/usr/bin/env bash
+HERE="$(cd "$(dirname "$0")" && pwd)"
+. "$HERE/lib.sh"
+. "$HERE/libdivecomputer.env"
+need_cmd x86_64-w64-mingw32-gcc; need_cmd gendef
+need_cmd x86_64-w64-mingw32-dlltool; need_cmd objdump; need_cmd make; need_cmd tar
+
+WORK="$HERE/.work"
+SRC="$WORK/src/libdivecomputer-$LDC_VERSION"
+[ -x "$SRC/configure" ] || die "run fetch.sh first"
+REPO="$(cd "$HERE/../.." && pwd)"
+WINLIB="$REPO/native/lib/windows_x64"
+
+BD="$WORK/build-windows"
+rm -rf "$BD"; mkdir -p "$BD/hdr"; cd "$BD"
+
+# --- headers for libusb + hidapi ---
+fetch_and_verify "$LIBUSB_TARBALL_URL" "$LIBUSB_TARBALL_SHA256" "$WORK/libusb.tar.bz2"
+fetch_and_verify "$HIDAPI_TARBALL_URL" "$HIDAPI_TARBALL_SHA256" "$WORK/hidapi.tar.gz"
+mkdir -p hdr/libusb hdr/hidapi
+tar -xjf "$WORK/libusb.tar.bz2" --strip-components=2 -C hdr/libusb --wildcards '*/libusb/libusb.h'
+tar -xzf "$WORK/hidapi.tar.gz"  --strip-components=2 -C hdr/hidapi --wildcards '*/hidapi/hidapi.h'
+[ -f hdr/libusb/libusb.h ] && [ -f hdr/hidapi/hidapi.h ] || die "header extraction failed"
+
+# --- import libs synthesised from the DLLs we are NOT rebuilding ---
+for d in libusb-1.0 libhidapi-0; do
+  gendef - "$WINLIB/$d.dll" > "$d.def"
+  x86_64-w64-mingw32-dlltool -d "$d.def" -l "lib${d}.dll.a"
+done
+
+# --- configure + build ---
+export CC=x86_64-w64-mingw32-gcc
+"$SRC/configure" --host=x86_64-w64-mingw32 \
+  --disable-static --enable-shared --disable-dependency-tracking \
+  PKG_CONFIG=/bin/false \
+  LIBUSB_CFLAGS="-I$BD/hdr" LIBUSB_LIBS="-L$BD -l:liblibusb-1.0.dll.a" \
+  HIDAPI_CFLAGS="-I$BD/hdr" HIDAPI_LIBS="-L$BD -l:liblibhidapi-0.dll.a" \
+  CFLAGS="-O2 -DNDEBUG"
+make -j"$(nproc)"
+
+BUILT="$(readlink -f src/.libs/libdivecomputer-0.dll)"
+[ -f "$BUILT" ] || die "no built DLL (check libtool output for the exact name)"
+cp "$BUILT" "$WINLIB/libdivecomputer-0.dll"
+x86_64-w64-mingw32-strip --strip-unneeded "$WINLIB/libdivecomputer-0.dll"
+
+# --- sanity ---
+IMPORTS="$(objdump -p "$WINLIB/libdivecomputer-0.dll" | sed -n 's/.*DLL Name: //p' | sort -u | tr '\n' ' ')"
+log "DLL imports: $IMPORTS"
+for want in libhidapi-0.dll libusb-1.0.dll KERNEL32.dll msvcrt.dll WS2_32.dll ADVAPI32.dll; do
+  case " $IMPORTS " in *" $want "*) : ;; *) die "missing expected import: $want" ;; esac
+done
+case " $IMPORTS " in *vcruntime*|*api-ms-win*) die "MSVC-style import present — must be a MinGW/msvcrt build" ;; esac
+x86_64-w64-mingw32-nm -D "$WINLIB/libdivecomputer-0.dll" 2>/dev/null | grep -q mares_iconhd_device_open \
+  || objdump -x "$WINLIB/libdivecomputer-0.dll" | grep -q mares_iconhd_device_open \
+  || die "mares_iconhd_device_open not exported"
+log "Windows DLL OK"
+```
+
+- [ ] **Step 3: Run it**
+
+Run:
+```
+wsl.exe -e bash -lc 'cd /mnt/d/Documents/GitHub/nautilus/flutter_divecomputer/native/build && bash build-windows.sh'
+```
+Expected: ends with `>>> Windows DLL OK`. If libtool emits a differently-named DLL (e.g. `libdivecomputer-1.dll` after a future soname bump), the script dies at "no built DLL" — read `src/.libs/*.dll`, and if the interface number legitimately changed, update the `cp` target **and** `windows/CMakeLists.txt`'s bundled-library list together, then note it in `CHANGELOG.md`.
+
+- [ ] **Step 4: Compare imports to the recorded baseline**
+
+Compare the `DLL imports:` line to the baseline recorded in `native/build/README.md` (Task 1 Step 8). New system imports are acceptable if they are standard MinGW runtime DLLs (`msvcrt`, `KERNEL32`, `ADVAPI32`, `WS2_32`, `SHELL32`, `USER32`); a `vcruntime`/`api-ms-win` import is a hard failure (the script already checks). Note any delta in the commit message.
+
+- [ ] **Step 5: `flutter analyze`**
+
+Run: `flutter analyze` — no new errors (no Dart change this task).
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add native/build/build-windows.sh native/build/libdivecomputer.env native/lib/windows_x64/libdivecomputer-0.dll
+git commit -m "build(windows): rebuild libdivecomputer-0.dll from 0.9.0 (MinGW cross)
+
+Cross-compiles the DLL with x86_64-w64-mingw32-gcc, linking against the
+existing vendored libusb-1.0.dll / libhidapi-0.dll via gendef+dlltool
+import libs so their ABI cannot drift. libusb/hidapi are kept byte-for-
+byte. Script asserts the import table matches the recorded MinGW baseline
+and that mares_iconhd is exported.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01BVtC1s9FpHrgniQGVHp2h3"
+```
+
+---
+
+## Task 4: Vendored headers swap + FFI binding regen + iterator call-site fix
+
+**Files:**
+- Modify: `native/include/libdivecomputer/*.h` (all replaced)
+- Modify: `lib/framework/dive_computer_ffi_bindings_generated.dart` (regenerated)
+- Modify: `lib/framework/dive_computer_ffi.dart` (~line 164)
+- Modify: `ffigen.yaml` (only if needed)
+- Create: `test/framework/dive_computer_ffi_descriptor_test.dart`
+
+**Interfaces:**
+- Consumes: `native/build/.work/src/libdivecomputer-0.9.0/include/libdivecomputer/*.h` from Task 1.
+- Produces: regenerated bindings exposing `dc_descriptor_iterator_new(Pointer<Pointer<dc_iterator_t>>, Pointer<dc_context_t>) -> int`; `dive_computer_ffi.dart`'s `supportedComputers` getter calling it with `ffi.nullptr`.
+
+- [ ] **Step 1: Write the failing source-guard test**
+
+Create `test/framework/dive_computer_ffi_descriptor_test.dart`:
+
+```dart
+import 'dart:io';
+import 'package:test/test.dart';
+
+void main() {
+  final src = File('lib/framework/dive_computer_ffi.dart').readAsStringSync();
+
+  test('supportedComputers uses dc_descriptor_iterator_new (0.9.0 API)', () {
+    expect(
+      RegExp(r'dc_descriptor_iterator_new\(\s*iterator,\s*ffi\.nullptr\s*\)')
+          .hasMatch(src),
+      isTrue,
+      reason: '0.9.0 replaced dc_descriptor_iterator with '
+          'dc_descriptor_iterator_new(iterator, context); pass ffi.nullptr '
+          'to keep the pre-openConnection() call working.',
+    );
+    expect(
+      src.contains('dc_descriptor_iterator('),
+      isFalse,
+      reason: 'the old symbol is now a C macro and is not in the bindings',
+    );
+  });
+
+  test('generated bindings expose dc_descriptor_iterator_new', () {
+    final gen = File('lib/framework/dive_computer_ffi_bindings_generated.dart')
+        .readAsStringSync();
+    expect(gen.contains('dc_descriptor_iterator_new'), isTrue);
+  });
+}
+```
+
+- [ ] **Step 2: Run it — verify it fails**
+
+Run: `flutter test test/framework/dive_computer_ffi_descriptor_test.dart`
+Expected: both tests FAIL (source still calls `dc_descriptor_iterator(`, bindings lack the `_new` symbol).
+
+- [ ] **Step 3: Swap the vendored headers (CRLF-normalised)**
+
+Run in WSL:
+```
+wsl.exe -e bash -lc '
+set -e
+R=/mnt/d/Documents/GitHub/nautilus/flutter_divecomputer
+S=$R/native/build/.work/src/libdivecomputer-0.9.0/include/libdivecomputer
+D=$R/native/include/libdivecomputer
+for f in "$S"/*.h; do
+  b=$(basename "$f")
+  sed "s/\$/\r/" "$f" > "$D/$b"    # LF -> CRLF
+done
+git -C $R diff --stat native/include/libdivecomputer
+'
+```
+Expected: a handful of headers change; `parser.h`, `descriptor.h`, `ble.h`, `common.h`, `version.h` show real edits, others show none (or none at all).
+
+- [ ] **Step 4: Sanity-check the header delta matches the spec**
+
+Run:
+```
+wsl.exe -e bash -lc 'cd /mnt/d/Documents/GitHub/nautilus/flutter_divecomputer && git diff native/include/libdivecomputer | grep "^[+-]" | grep -v "^[+-][+-]" | grep -vE "^\S*\s*\r?$"'
+```
+Expected semantic additions only: `DC_FIELD_LOCATION`, `dc_location_t`, `dc_descriptor_iterator_new` + its compat `#define`, `const` on descriptor getters, the `ble.h` ioctl/UUID block, two `DC_FAMILY_*` values, `DC_VERSION "0.9.0"`. **If anything else changed** (e.g. a sample-callback signature, `dc_parser_new`), STOP — the spec's "delta is small" assumption is wrong and the FFI wrapper needs a wider review. Report it.
+
+- [ ] **Step 5: Regenerate the bindings**
+
+Run: `flutter pub run ffigen --config ffigen.yaml`
+Then: `git diff --stat lib/framework/dive_computer_ffi_bindings_generated.dart`
+
+If the diff does **not** contain `dc_descriptor_iterator_new`, add `    - 'native/include/libdivecomputer/descriptor.h'` to the `headers: entry-points:` list in `ffigen.yaml` and re-run.
+
+- [ ] **Step 6: Review the binding diff**
+
+Run: `git diff lib/framework/dive_computer_ffi_bindings_generated.dart`
+Expected: `dc_descriptor_iterator` removed; `dc_descriptor_iterator_new` added; `DC_IOCTL_BLE_*` / `dc_ble_uuid2str` / `DC_BLE_UUID_SIZE` constants added; `DC_FIELD_LOCATION`, `dc_location_t` added; two `DC_FAMILY_*` constants added; possibly `const`-related signature cosmetics. **Any removed or renamed symbol other than `dc_descriptor_iterator`** — cross-check it is not referenced anywhere in `lib/` (`grep -rn <symbol> lib/`); if it is, STOP and report.
+
+- [ ] **Step 7: Fix the call site**
+
+In `lib/framework/dive_computer_ffi.dart`, `supportedComputers` getter (~line 163):
+
+```dart
+    _handleResult(
+      // 0.9.0 renamed dc_descriptor_iterator -> dc_descriptor_iterator_new(it,
+      // ctx); a NULL context is fine here and preserves the old behaviour
+      // (supportedComputers can run before openConnection() creates one).
+      _bindings.dc_descriptor_iterator_new(iterator, ffi.nullptr),
+      'iterator creation',
+    );
+```
+
+Leave the rest of the getter unchanged.
+
+- [ ] **Step 8: Run the guard test + analyze + full suite**
+
+Run: `flutter test test/framework/dive_computer_ffi_descriptor_test.dart` — Expected: PASS.
+Run: `flutter analyze` — Expected: clean.
+Run: `flutter test` — Expected: all pass (the existing FFI/isolate source-guard tests still match; no runtime native load in `flutter test`).
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add native/include/libdivecomputer/ lib/framework/dive_computer_ffi_bindings_generated.dart lib/framework/dive_computer_ffi.dart ffigen.yaml test/framework/dive_computer_ffi_descriptor_test.dart
+git commit -m "ffi: vendor libdivecomputer 0.9.0 headers, regen bindings
+
+Swaps the 0.9.0-devel snapshot headers for the 0.9.0 release headers
+(CRLF-normalised) and regenerates the ffigen bindings. The only forced
+source change: dc_descriptor_iterator -> dc_descriptor_iterator_new(it,
+ffi.nullptr) (the old name is now a C macro). New ble.h ioctls and the
+DC_FIELD_LOCATION field are regenerated but unused. Source-guard test
+added for the iterator migration.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01BVtC1s9FpHrgniQGVHp2h3"
+```
+
+---
+
+## Task 5: `maresBluelink` profile → Sirius default + dartdoc
+
+**Files:**
+- Modify: `lib/types/ble_profile.dart`
+- Modify: `test/types/ble_profile_test.dart`
+
+**Interfaces:**
+- Consumes: nothing new.
+- Produces: `BleProfiles.maresBluelink.productHint == 'Sirius'`.
+
+- [ ] **Step 1: Update the failing test expectations**
+
+In `test/types/ble_profile_test.dart`, the `'Mares BlueLink profile matches its advertised names'` test:
+- change `expect(BleProfiles.maresBluelink.productHint, 'Genius');` to `expect(BleProfiles.maresBluelink.productHint, 'Sirius');`
+- in its name loop, ensure the list is exactly:
+  ```dart
+  'Mares bluelink pro',
+  'Mares Genius',
+  'Genius',
+  'Sirius',
+  'Mares Sirius',
+  ```
+
+Search the rest of the file for any other `productHint, 'Genius'` and update it too (there is one in the Mares block only).
+
+- [ ] **Step 2: Run it — verify it fails**
+
+Run: `flutter test test/types/ble_profile_test.dart`
+Expected: FAIL — `productHint` is still `'Genius'`.
+
+- [ ] **Step 3: Change `productHint` in `lib/types/ble_profile.dart`**
+
+In the `maresBluelink` constant:
+```dart
+    vendorHint: 'Mares',
+    productHint: 'Sirius',
+```
+
+- [ ] **Step 4: Rewrite the `maresBluelink` dartdoc paragraph**
+
+Replace the paragraph that currently begins *"`productHint` is `Genius` because that descriptor exists…"* with:
+
+```dart
+  /// `productHint` is `Sirius` — libdivecomputer 0.9.0 carries the Sirius
+  /// descriptor (`mares_iconhd` family, model `0x2F`, BLE-only). A BlueLink Pro
+  /// dongle advertises the same `Mares bluelink pro` name whatever computer it
+  /// fronts, so this is only a default; the example app's descriptor picker
+  /// lets a Genius / Quad / Puck Pro / Smart Air owner switch.
+```
+
+- [ ] **Step 5: Update the `shearwaterPerdix3` dartdoc**
+
+Replace the sentence *"The vendored libdivecomputer build (0.9.0-devel) has no Perdix 3 descriptor, so a scan will recognise the device but the download can't resolve a backend until the native library is updated."* with:
+
+```dart
+  /// libdivecomputer 0.9.0 still has no Perdix 3 descriptor (the Petrel family
+  /// tops out at Peregrine TX), so a scan recognises the device but the
+  /// download can't resolve a backend until a newer native library is
+  /// vendored. `productHint` falls back to `Perdix 2`.
+```
+
+- [ ] **Step 6: Run tests + analyze**
+
+Run: `flutter test test/types/ble_profile_test.dart` — Expected: PASS.
+Run: `flutter analyze` — Expected: clean.
+Run: `flutter test` — Expected: all pass.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add lib/types/ble_profile.dart test/types/ble_profile_test.dart
+git commit -m "ble: default the Mares BlueLink profile's productHint to Sirius
+
+Now that libdivecomputer 0.9.0 has the Sirius descriptor, a scanned
+BlueLink/Sirius device resolves to 'Mares Sirius' by default instead of
+'Genius'. Updates the maresBluelink and shearwaterPerdix3 dartdoc for
+0.9.0.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01BVtC1s9FpHrgniQGVHp2h3"
+```
+
+---
+
+## Task 6: CHANGELOG + README
+
+**Files:**
+- Modify: `CHANGELOG.md`
+- Modify: `README.md`
+
+**Interfaces:** none.
+
+- [ ] **Step 1: Add the CHANGELOG bullet**
+
+Under `## Unreleased`, directly after the existing BLE-recognition bullet (the one ending *"…so its download can't resolve a backend."*), add:
+
+```markdown
+* Bumped vendored `libdivecomputer` from the `0.9.0-devel` snapshot to the
+  **`0.9.0` release** (2025-06-30). New over BLE: **Mares Sirius**, plus other
+  now-selectable models — Mares Puck Air 2 / Quad Ci / Puck 4 / Puck Lite,
+  Shearwater Tern / Peregrine TX, Aqualung i330R / Apeks DSX, Halcyon Symbios,
+  Scubapro G3, and more (they appear in `supportedComputers`; only Mares gets
+  a scan-routing `BleProfile` so far). The `maresBluelink` profile now defaults
+  its `productHint` to `Sirius`. `dc_descriptor_iterator` was migrated to
+  `dc_descriptor_iterator_new`. Android `.so` files are now 16 KB-page aligned
+  (Android 15+). Native binaries are rebuilt by the new `native/build/` recipe
+  (Windows DLL + 4 Android ABIs); the macOS `.dylib` is not yet covered by it,
+  so Sirius will not resolve on macOS.
+```
+
+- [ ] **Step 2: Update the README platform table**
+
+In `README.md`, the Platform support table:
+- **Windows** row Notes: append ` Rebuilt from source by \`native/build/build-windows.sh\` (libdivecomputer 0.9.0).`
+- **Android** row Notes: append ` Rebuilt by \`native/build/build-android.sh\` (libdivecomputer 0.9.0, 16 KB-page aligned).`
+- **macOS** row Notes: replace with `Native \`.dylib\` bundled (universal + per-arch), but **not** rebuilt by \`native/build/\` yet — still the \`0.9.0-devel\` snapshot, so devices added in the 0.9.0 release (Mares Sirius included) will not resolve on macOS. Not an actively targeted platform.`
+
+- [ ] **Step 3: Update the README "How it works" / Roadmap BLE bullet**
+
+In the Roadmap `**BLE transport — done.**` bullet, change *"Mares, Cressi and Shearwater profiles ship"* to *"Mares (Sirius default), Cressi and Shearwater profiles ship"*. In the same bullet, update the Perdix-3 clause to *"the Perdix 3 has no descriptor in libdivecomputer 0.9.0 yet, so its download can't resolve a backend."*
+
+- [ ] **Step 4: Verify markdown + analyze**
+
+Run: `flutter analyze` — clean (docs only).
+Eyeball `git diff CHANGELOG.md README.md`.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add CHANGELOG.md README.md
+git commit -m "docs: record the libdivecomputer 0.9.0 bump + Mares Sirius
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01BVtC1s9FpHrgniQGVHp2h3"
+```
+
+---
+
+## Task 7: On-device acceptance + `BleTransport` VARIABLE-mode contingency
+
+**Files:**
+- Possibly modify: `lib/framework/ble/ble_transport.dart` and/or `lib/framework/ble/ble_bridge_callbacks.dart` (only if the acceptance test reveals a framing bug)
+- Test: manual on-device + a unit test if a fix is needed
+
+**Interfaces:**
+- Consumes: the rebuilt Android `.so` (Task 2), regenerated bindings (Task 4), updated profile (Task 5).
+
+- [ ] **Step 1: Build + install the example on the phone**
+
+With the user's Sirius powered on (or its BlueLink Pro dongle paired in Android Settings) and the Pixel 6a connected:
+```
+cd example && flutter run -d <device-id>
+```
+
+- [ ] **Step 2: Scan and resolve**
+
+In the example: start a BLE scan. Expected: the Sirius (advertised name containing `Sirius`) or the dongle (`Mares bluelink pro`) appears, and the descriptor picker defaults to **Mares Sirius**. Record the exact advertised name seen — if it does not match any `maresBluelink.namePatterns` entry, add the real substring to that list (in `lib/types/ble_profile.dart` + its test) as a small follow-up commit.
+
+- [ ] **Step 3: Run a sync**
+
+Trigger the download. Watch `flutter run` logs for:
+- successful `dc_custom_open` / `dc_device_open` (no "backend not found").
+- `mares_iconhd` progress events advancing.
+- dives written to the example's JSONL, with sane timestamps (seconds, since sample time is ms internally — the parser wrapper already converts) and depth/temperature values.
+
+- [ ] **Step 4: If the sync stalls or truncates on the first write**
+
+This is the predicted failure: `mares_iconhd.c` runs the Sirius in `VARIABLE` packet mode and writes payloads up to `MAXPACKET-3` bytes straight to the iostream, expecting the transport to fragment to the negotiated ATT MTU. If `BleTransport`'s write path assumes ~20-byte GATT payloads:
+
+1. Write a unit test in `test/framework/ble/ble_transport_test.dart` (follow the existing `fake_ble_central.dart` pattern) asserting that a `write` of N bytes with negotiated MTU M is delivered as `ceil(N/(M-3))` GATT writes, and that with no MTU negotiated it falls back to 20-byte chunks.
+2. Run it — verify it fails.
+3. Implement MTU-aware chunking in `ble_transport.dart` (fragment `write(bytes)` into `mtu - 3` slices; default `mtu = 23` until the platform reports the negotiated value).
+4. Run the test — verify it passes. Run `flutter test` + `flutter analyze`.
+5. Commit:
+   ```bash
+   git commit -m "ble: fragment transport writes to the negotiated ATT MTU
+
+   The Mares Sirius (mares_iconhd VARIABLE packet mode) writes payloads
+   larger than one GATT packet and relies on the transport to fragment.
+   Chunk BleTransport writes to mtu-3, defaulting to 20 until the MTU
+   exchange completes.
+
+   Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+   Claude-Session: https://claude.ai/code/session_01BVtC1s9FpHrgniQGVHp2h3"
+   ```
+6. Re-run Steps 1–3.
+
+- [ ] **Step 5: Record the result**
+
+Note in the final report: Sirius model + firmware, advertised name, dive count downloaded, whether Step 4's fix was needed, and any parser oddities. If a real Sirius is not reachable during execution, mark this task **BLOCKED — needs the user's hardware** and stop; Tasks 1–6 stand on their own (the lib bump, build recipe, and profile change are all independently valuable and merge-safe).
+
+---
+
+## Self-Review
+
+**1. Spec coverage**
+
+| Spec section | Task |
+|---|---|
+| §1 Vendored native bump — headers | Task 4 Step 3 |
+| §1 — Windows DLL | Task 3 |
+| §1 — Android .so ×4 | Task 2 |
+| §1 — macOS left stale, documented | Task 6 Steps 1–2 |
+| §1 — 16 KB page alignment | Task 2 Step 1 (LDFLAGS) + Step 1 sanity |
+| §2 Reproducible build recipe (`native/build/`) | Tasks 1, 2, 3 |
+| §3 FFI regen + `dc_descriptor_iterator_new` fix | Task 4 |
+| §4 Dart wiring — `productHint` + dartdoc | Task 5 |
+| §4 — no `computer.dart` / isolate / bitmask change | File Structure "unchanged" list; Task 4 Step 6 cross-check |
+| §5 Example app — descriptor picker lists Sirius | Task 7 Step 2 |
+| §5 Verification — static | Tasks 4–6 (`flutter analyze` / `flutter test`) |
+| §5 Verification — Android on-device acceptance | Task 7 |
+| §5 Verification — Windows limited | Task 3 sanity block (DLL loads + `mares_iconhd` export); a live Windows-BLE run is out of reach (no VS) and is called out |
+| §6 Docs — CHANGELOG / README / native/build README | Task 6 + Task 1 Step 7 |
+| §Risks — BleTransport VARIABLE framing | Task 7 Step 4 |
+| §Risks — MinGW raw-DLL link | Task 3 Step 2 (`gendef`/`dlltool`) |
+| §Risks — libtool DLL naming | Task 3 Step 3 note |
+| §Risks — ffigen churn | Task 4 Step 6 |
+| §Risks — `--without-*` on Android still loads | Task 2 Step 1 (NEEDED check) |
+| §Risks — WSL filesystem | Global Constraints; all build scripts use `~/.work` |
+
+Windows-verification gap is inherent (no Visual Studio on the machine) and is stated in both the spec and Task 3 — not a plan gap.
+
+**2. Placeholder scan**
+
+- `NDK_SHA256=__FILL_FROM_TASK_1_STEP_6__` — intentional: the value is produced by a step in the same task (downloading the NDK once), not left for the reader to invent. Task 1 Step 6 fills it.
+- `libusb`/`hidapi` header sha256 values are concrete; Task 3 Step 1 tells the executor exactly what to do if upstream rotated them (headers only, ABI-stable).
+- README/CHANGELOG steps quote the exact text to insert. No "add appropriate…".
+
+**3. Type consistency**
+
+- `dc_descriptor_iterator_new(iterator, ffi.nullptr)` — same spelling in Task 4 Step 1 test regex, Step 7 code, and the commit message.
+- `productHint` `'Sirius'` — Task 5 Steps 1, 3; test expectation and source agree.
+- `mares_iconhd_device_open` — the export grepped in Task 2 Step 1 and Task 3 Step 2 (correct: the Sirius is model `0x2F` *inside* the `mares_iconhd` backend; there is no `mares_sirius_*` symbol).
+- SONAME `libdivecomputer.so` — Task 2 Step 1 `patchelf` + sanity check + Global Constraints agree.
+- Binary paths match Global Constraints throughout.
