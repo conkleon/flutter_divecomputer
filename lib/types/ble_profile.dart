@@ -124,10 +124,10 @@ class BleProfiles {
   /// GATT serial service (Subsurface `core/qt-ble.cpp`). Listed before
   /// [shearwater] in [known] so the more specific `'Perdix 3'` pattern wins.
   ///
-  /// The vendored libdivecomputer build (0.9.0-devel) has no Perdix 3
-  /// descriptor, so a scan will recognise the device but the download can't
-  /// resolve a backend until the native library is updated. `productHint`
-  /// falls back to `Perdix 2`.
+  /// libdivecomputer 0.9.0 still has no Perdix 3 descriptor (the Petrel family
+  /// tops out at Peregrine TX), so a scan recognises the device but the
+  /// download can't resolve a backend until a newer native library is
+  /// vendored. `productHint` falls back to `Perdix 2`.
   ///
   /// UNVERIFIED against hardware.
   static const shearwaterPerdix3 = BleProfile(
@@ -151,10 +151,11 @@ class BleProfiles {
   /// same one. Write/notify characteristics are left to property-based
   /// discovery (as Subsurface does for Mares).
   ///
-  /// `productHint` is `Genius` because that descriptor exists in the
-  /// vendored libdivecomputer build and drives the `mares_iconhd` backend;
-  /// there is no `Sirius` descriptor in this build. The example app lets
-  /// the user override the descriptor when their model differs.
+  /// `productHint` is `Sirius` — libdivecomputer 0.9.0 carries the Sirius
+  /// descriptor (`mares_iconhd` family, model `0x2F`, BLE-only). A BlueLink Pro
+  /// dongle advertises the same `Mares bluelink pro` name whatever computer it
+  /// fronts, so this is only a default; the example app's descriptor picker
+  /// lets a Genius / Quad / Puck Pro / Smart Air owner switch.
   ///
   /// All name patterns + the UUID are reference-derived and UNVERIFIED
   /// against hardware — if a device never shows up in a scan, widen
@@ -163,7 +164,7 @@ class BleProfiles {
     namePatterns: ['Mares bluelink pro', 'Mares Genius', 'Genius', 'Sirius'],
     serviceUuid: '544e326b-5b72-c6b0-1c46-41c1bc448118',
     vendorHint: 'Mares',
-    productHint: 'Genius',
+    productHint: 'Sirius',
   );
 
   /// Cressi BLE dive computers (`DC_FAMILY_CRESSI_GOA`) — Goa, Cartesio,

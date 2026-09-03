@@ -96,6 +96,7 @@ void main() {
         'Mares bluelink pro',
         'Mares Genius',
         'Genius',
+        'Sirius',
         'Mares Sirius',
       ]) {
         expect(BleProfiles.match(name), same(BleProfiles.maresBluelink),
@@ -104,7 +105,7 @@ void main() {
       expect(BleProfiles.maresBluelink.serviceUuid,
           '544e326b-5b72-c6b0-1c46-41c1bc448118');
       expect(BleProfiles.maresBluelink.vendorHint, 'Mares');
-      expect(BleProfiles.maresBluelink.productHint, 'Genius');
+      expect(BleProfiles.maresBluelink.productHint, 'Sirius');
       // Characteristics + write mode left to property-based discovery.
       expect(BleProfiles.maresBluelink.writeCharUuid, isNull);
       expect(BleProfiles.maresBluelink.notifyCharUuid, isNull);
