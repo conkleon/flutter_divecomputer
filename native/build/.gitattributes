@@ -1,0 +1,6 @@
+# These are executed by bash inside WSL. CRLF breaks them (`$'\r': command not
+# found`, and trailing \r on the grep -F Sirius row). Force LF regardless of the
+# repo's core.autocrlf setting.
+*.sh text eol=lf
+*.env text eol=lf
+.gitignore text eol=lf

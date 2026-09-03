@@ -27,6 +27,8 @@ migrate_working_dir/
 **/doc/api/
 .dart_tool/
 build/
+# ...but native/build/ is a committed libdivecomputer vendoring recipe, not build output.
+!/native/build/
 
 # Subagent-driven-development scratch workspace
 .superpowers/
