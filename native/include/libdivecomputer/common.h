@@ -74,6 +74,7 @@ typedef enum dc_family_t {
 	DC_FAMILY_OCEANIC_VTPRO = (4 << 16),
 	DC_FAMILY_OCEANIC_VEO250,
 	DC_FAMILY_OCEANIC_ATOM2,
+	DC_FAMILY_PELAGIC_I330R,
 	/* Mares */
 	DC_FAMILY_MARES_NEMO = (5 << 16),
 	DC_FAMILY_MARES_PUCK,
@@ -120,6 +121,8 @@ typedef enum dc_family_t {
 	DC_FAMILY_OCEANS_S1 = (22 << 16),
 	/* Divesoft Freedom */
 	DC_FAMILY_DIVESOFT_FREEDOM = (23 << 16),
+	/* Halcyon Symbios */
+	DC_FAMILY_HALCYON_SYMBIOS = (24 << 16),
 } dc_family_t;
 
 #ifdef __cplusplus

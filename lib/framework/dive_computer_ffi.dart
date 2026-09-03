@@ -161,7 +161,10 @@ class DiveComputerFfi {
     final iterator = calloc<ffi.Pointer<dc_iterator_t>>();
 
     _handleResult(
-      _bindings.dc_descriptor_iterator(iterator),
+      // 0.9.0 renamed dc_descriptor_iterator -> dc_descriptor_iterator_new(it,
+      // ctx); a NULL context is fine here and preserves the old behaviour
+      // (supportedComputers can run before openConnection() creates one).
+      _bindings.dc_descriptor_iterator_new(iterator, ffi.nullptr),
       'iterator creation',
     );
 

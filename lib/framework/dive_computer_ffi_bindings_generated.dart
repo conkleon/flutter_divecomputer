@@ -140,22 +140,27 @@ class DiveComputerFfiBindings {
   /// Create an iterator to enumerate the supported dive computers.
   ///
   /// @param[out] iterator  A location to store the iterator.
+  /// @param[in]  context   A valid device descriptor.
   /// @returns #DC_STATUS_SUCCESS on success, or another #dc_status_t code
   /// on failure.
-  int dc_descriptor_iterator(
+  int dc_descriptor_iterator_new(
     ffi.Pointer<ffi.Pointer<dc_iterator_t>> iterator,
+    ffi.Pointer<dc_context_t> context,
   ) {
-    return _dc_descriptor_iterator(
+    return _dc_descriptor_iterator_new(
       iterator,
+      context,
     );
   }
 
-  late final _dc_descriptor_iteratorPtr = _lookup<
-          ffi.NativeFunction<
-              ffi.Int32 Function(ffi.Pointer<ffi.Pointer<dc_iterator_t>>)>>(
-      'dc_descriptor_iterator');
-  late final _dc_descriptor_iterator = _dc_descriptor_iteratorPtr
-      .asFunction<int Function(ffi.Pointer<ffi.Pointer<dc_iterator_t>>)>();
+  late final _dc_descriptor_iterator_newPtr = _lookup<
+      ffi.NativeFunction<
+          ffi.Int32 Function(ffi.Pointer<ffi.Pointer<dc_iterator_t>>,
+              ffi.Pointer<dc_context_t>)>>('dc_descriptor_iterator_new');
+  late final _dc_descriptor_iterator_new =
+      _dc_descriptor_iterator_newPtr.asFunction<
+          int Function(ffi.Pointer<ffi.Pointer<dc_iterator_t>>,
+              ffi.Pointer<dc_context_t>)>();
 
   /// Free the device descriptor.
   ///
@@ -1706,6 +1711,63 @@ class DiveComputerFfiBindings {
           ffi.Pointer<dc_custom_cbs_t>,
           ffi.Pointer<ffi.Void>)>();
 
+  /// Convert a bluetooth UUID to a string.
+  ///
+  /// The bluetooth UUID is formatted as
+  /// XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX, where each XX pair is a
+  /// hexadecimal number specifying an octet of the UUID.
+  /// The minimum size for the buffer is #DC_BLE_UUID_SIZE bytes.
+  ///
+  /// @param[in]  uuid     A bluetooth UUID.
+  /// @param[in]  str      The memory buffer to store the result.
+  /// @param[in]  size     The size of the memory buffer.
+  /// @returns The null-terminated string on success, or NULL on failure.
+  ffi.Pointer<ffi.Char> dc_ble_uuid2str(
+    ffi.Pointer<ffi.UnsignedChar> uuid,
+    ffi.Pointer<ffi.Char> str,
+    int size,
+  ) {
+    return _dc_ble_uuid2str(
+      uuid,
+      str,
+      size,
+    );
+  }
+
+  late final _dc_ble_uuid2strPtr = _lookup<
+      ffi.NativeFunction<
+          ffi.Pointer<ffi.Char> Function(ffi.Pointer<ffi.UnsignedChar>,
+              ffi.Pointer<ffi.Char>, ffi.Size)>>('dc_ble_uuid2str');
+  late final _dc_ble_uuid2str = _dc_ble_uuid2strPtr.asFunction<
+      ffi.Pointer<ffi.Char> Function(
+          ffi.Pointer<ffi.UnsignedChar>, ffi.Pointer<ffi.Char>, int)>();
+
+  /// Convert a string to a bluetooth UUID.
+  ///
+  /// The string is expected to be in the format
+  /// XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX, where each XX pair is a
+  /// hexadecimal number specifying an octet of the UUID.
+  ///
+  /// @param[in]  str      A null-terminated string.
+  /// @param[in]  uuid     The memory buffer to store the result.
+  /// @returns Non-zero on success, or zero on failure.
+  int dc_ble_str2uuid(
+    ffi.Pointer<ffi.Char> str,
+    ffi.Pointer<ffi.UnsignedChar> uuid,
+  ) {
+    return _dc_ble_str2uuid(
+      str,
+      uuid,
+    );
+  }
+
+  late final _dc_ble_str2uuidPtr = _lookup<
+      ffi.NativeFunction<
+          ffi.Int Function(ffi.Pointer<ffi.Char>,
+              ffi.Pointer<ffi.UnsignedChar>)>>('dc_ble_str2uuid');
+  late final _dc_ble_str2uuid = _dc_ble_str2uuidPtr.asFunction<
+      int Function(ffi.Pointer<ffi.Char>, ffi.Pointer<ffi.UnsignedChar>)>();
+
   /// Convert a bluetooth address to a string.
   ///
   /// The bluetooth address is formatted as XX:XX:XX:XX:XX:XX, where each
@@ -1936,6 +1998,7 @@ abstract class dc_family_t {
   static const int DC_FAMILY_OCEANIC_VTPRO = 262144;
   static const int DC_FAMILY_OCEANIC_VEO250 = 262145;
   static const int DC_FAMILY_OCEANIC_ATOM2 = 262146;
+  static const int DC_FAMILY_PELAGIC_I330R = 262147;
 
   /// Mares
   static const int DC_FAMILY_MARES_NEMO = 327680;
@@ -2001,6 +2064,9 @@ abstract class dc_family_t {
 
   /// Divesoft Freedom
   static const int DC_FAMILY_DIVESOFT_FREEDOM = 1507328;
+
+  /// Halcyon Symbios
+  static const int DC_FAMILY_HALCYON_SYMBIOS = 1572864;
 }
 
 final class dc_context_t extends ffi.Opaque {}
@@ -2282,6 +2348,7 @@ abstract class dc_field_type_t {
   static const int DC_FIELD_TANK = 11;
   static const int DC_FIELD_DIVEMODE = 12;
   static const int DC_FIELD_DECOMODEL = 13;
+  static const int DC_FIELD_LOCATION = 14;
 }
 
 abstract class parser_sample_event_t {
@@ -2486,6 +2553,21 @@ final class UnnamedStruct1 extends ffi.Struct {
 
   @ffi.UnsignedInt()
   external int low;
+}
+
+/// GPS Location
+///
+/// The latitude and longitude are in decimal degrees, and the (optional)
+/// altitude in meters.
+final class dc_location_t extends ffi.Struct {
+  @ffi.Double()
+  external double latitude;
+
+  @ffi.Double()
+  external double longitude;
+
+  @ffi.Double()
+  external double altitude;
 }
 
 final class dc_sample_value_t extends ffi.Union {
@@ -2851,5 +2933,17 @@ const int DC_SENSOR_NONE = 4294967295;
 const int DC_GASMIX_UNKNOWN = 4294967295;
 
 const int DC_IOCTL_BLE_GET_NAME = 1073766912;
+
+const int DC_IOCTL_BLE_GET_PINCODE = 1073766913;
+
+const int DC_IOCTL_BLE_GET_ACCESSCODE = 1073766914;
+
+const int DC_IOCTL_BLE_SET_ACCESSCODE = 2147508738;
+
+const int DC_IOCTL_BLE_CHARACTERISTIC_READ = 1073766915;
+
+const int DC_IOCTL_BLE_CHARACTERISTIC_WRITE = 2147508739;
+
+const int DC_BLE_UUID_SIZE = 37;
 
 const int DC_BLUETOOTH_SIZE = 18;
