@@ -14,9 +14,24 @@ void main() {
           'to keep the pre-openConnection() call working.',
     );
     expect(
-      src.contains('dc_descriptor_iterator('),
+      src.contains('_bindings.dc_descriptor_iterator('),
       isFalse,
-      reason: 'the old symbol is now a C macro and is not in the bindings',
+      reason: 'the bindings must never be called with the pre-0.9.0 one-arg '
+          'name — that symbol is now a C macro and is not in the generated '
+          'bindings; the only legacy reference allowed is the raw '
+          'lookupFunction fallback below',
+    );
+    expect(
+      src.contains('lookupFunction'),
+      isTrue,
+      reason: 'the macOS compat path raw-looks-up the legacy symbol when the '
+          'bundled .dylib predates 0.9.0 and lacks dc_descriptor_iterator_new',
+    );
+    expect(
+      src.contains("'dc_descriptor_iterator'"),
+      isTrue,
+      reason: 'the macOS compat path falls back to the pre-0.9.0 one-arg '
+          'dc_descriptor_iterator so the rest of macOS keeps working',
     );
   });
 

@@ -47,9 +47,9 @@ git-ignored.
 In order, each from a fresh WSL invocation:
 
 ```sh
-wsl.exe -e bash -lc 'cd /mnt/d/Documents/GitHub/nautilus/flutter_divecomputer/native/build && bash fetch.sh'
-wsl.exe -e bash -lc 'cd /mnt/d/Documents/GitHub/nautilus/flutter_divecomputer/native/build && bash build-android.sh'
-wsl.exe -e bash -lc 'cd /mnt/d/Documents/GitHub/nautilus/flutter_divecomputer/native/build && bash build-windows.sh'
+wsl.exe -e bash -lc 'cd "$(git rev-parse --show-toplevel)/native/build" && bash fetch.sh'
+wsl.exe -e bash -lc 'cd "$(git rev-parse --show-toplevel)/native/build" && bash build-android.sh'
+wsl.exe -e bash -lc 'cd "$(git rev-parse --show-toplevel)/native/build" && bash build-windows.sh'
 ```
 
 - `fetch.sh` — downloads + sha256-verifies + extracts the release tarball into
@@ -112,5 +112,8 @@ this block before committing.
 The macOS `.dylib` files under `native/lib/macos/` are **not** rebuilt by this
 recipe (no macOS cross-toolchain in WSL). They remain the older `0.9.0-devel`
 snapshot, so any dive computer added in the `0.9.0` release — the Mares Sirius
-included — will not resolve on macOS. macOS is not an actively targeted platform;
-rebuild the `.dylib` on a Mac if that changes.
+included — will not resolve on macOS. The rest of macOS keeps working: the FFI
+layer (`lib/framework/dive_computer_ffi.dart`) catches the missing
+`dc_descriptor_iterator_new` symbol and falls back to the pre-0.9.0
+`dc_descriptor_iterator`. macOS is not an actively targeted platform; rebuild the
+`.dylib` on a Mac if that changes.

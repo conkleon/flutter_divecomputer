@@ -34,7 +34,10 @@
   `dc_descriptor_iterator_new`. Android `.so` files are now 16 KB-page aligned
   (Android 15+). Native binaries are rebuilt by the new `native/build/` recipe
   (Windows DLL + 4 Android ABIs); the macOS `.dylib` is not yet covered by it,
-  so Sirius will not resolve on macOS.
+  so Sirius (and the other 0.9.0 additions) will not resolve on macOS — the
+  FFI layer detects the missing `dc_descriptor_iterator_new` symbol and falls
+  back to the pre-0.9.0 `dc_descriptor_iterator`, so the rest of macOS keeps
+  working.
 * `download()` now returns the dive computer's complete log in all build
   modes. Debug builds previously stopped after 5 dives.
 * Serial: `download()` takes an optional `serialPort` and a new

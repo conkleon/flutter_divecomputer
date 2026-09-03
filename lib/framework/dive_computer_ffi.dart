@@ -153,6 +153,32 @@ class DiveComputerFfi {
     _computerDescriptorCache.clear();
   }
 
+  /// Creates a descriptor iterator, tolerating a pre-0.9.0 native library.
+  ///
+  /// 0.9.0 renamed `dc_descriptor_iterator(it)` to
+  /// `dc_descriptor_iterator_new(it, ctx)` (with a NULL-context compat macro).
+  /// The bundled Windows/Android binaries are 0.9.0; the macOS `.dylib` is not
+  /// rebuilt yet and still exports only the old one-arg symbol. Fall back to it
+  /// so macOS keeps working — it just won't see models 0.9.0 added (Mares
+  /// Sirius, etc.).
+  static int _descriptorIterator(
+      ffi.Pointer<ffi.Pointer<dc_iterator_t>> iterator) {
+    try {
+      // A NULL context is fine here and preserves the old behaviour
+      // (supportedComputers can run before openConnection() creates one).
+      return _bindings.dc_descriptor_iterator_new(iterator, ffi.nullptr);
+    } on ArgumentError {
+      final legacy = _library.lookupFunction<
+          ffi.Int32 Function(ffi.Pointer<ffi.Pointer<dc_iterator_t>>),
+          int Function(ffi.Pointer<ffi.Pointer<dc_iterator_t>>)>(
+          'dc_descriptor_iterator');
+      log.warning('native libdivecomputer predates 0.9.0 '
+          '(no dc_descriptor_iterator_new); using the legacy iterator — '
+          'models added in 0.9.0 will not appear');
+      return legacy(iterator);
+    }
+  }
+
   static List<Computer> get supportedComputers {
     if (_computerDescriptorCache.isNotEmpty) {
       return _computerDescriptorCache.keys.toList();
@@ -161,10 +187,7 @@ class DiveComputerFfi {
     final iterator = calloc<ffi.Pointer<dc_iterator_t>>();
 
     _handleResult(
-      // 0.9.0 renamed dc_descriptor_iterator -> dc_descriptor_iterator_new(it,
-      // ctx); a NULL context is fine here and preserves the old behaviour
-      // (supportedComputers can run before openConnection() creates one).
-      _bindings.dc_descriptor_iterator_new(iterator, ffi.nullptr),
+      _descriptorIterator(iterator),
       'iterator creation',
     );
 

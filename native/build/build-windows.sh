@@ -83,6 +83,17 @@ log "DLL imports: $IMPORTS"
 for want in libhidapi-0.dll libusb-1.0.dll KERNEL32.dll msvcrt.dll WS2_32.dll ADVAPI32.dll; do
   case " $IMPORTS " in *" $want "*) : ;; *) die "missing expected import: $want" ;; esac
 done
+# Exact allowlist: reject ANY import outside the 6-name set, so an unexpected
+# extra runtime dependency (e.g. a MinGW libwinpthread-1.dll / libgcc_s_seh-1.dll
+# / libstdc++-6.dll that isn't vendored in native/lib/windows_x64/) fails the
+# build instead of shipping a DLL that won't load. Mirrors build-android.sh's
+# NEEDED whitelist. Case-insensitive: objdump prints system DLLs uppercase.
+for got in $IMPORTS; do
+  case "$(printf '%s' "$got" | tr '[:upper:]' '[:lower:]')" in
+    libhidapi-0.dll|libusb-1.0.dll|kernel32.dll|msvcrt.dll|ws2_32.dll|advapi32.dll) : ;;
+    *) die "unexpected import '$got' — not in the vendored 6-DLL set (full list: $IMPORTS)" ;;
+  esac
+done
 case " $IMPORTS " in
   *vcruntime*|*api-ms-win*|*VCRUNTIME*|*MSVCP*|*ucrtbase*)
     die "MSVC-style import present — must be a MinGW/msvcrt build" ;;
