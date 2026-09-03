@@ -22,8 +22,19 @@
   patterns are derived from Subsurface and not yet hardware-verified.
   The Bluetooth-Classic-only Shearwaters (original Predator / Petrel /
   NERD) are recognised but still need `ComputerTransport.bluetooth`,
-  which is unimplemented; the Perdix 3 has no descriptor in the bundled
-  libdivecomputer build yet, so its download can't resolve a backend.
+  which is unimplemented; the Perdix 3 has no descriptor in
+  libdivecomputer 0.9.0 yet, so its download can't resolve a backend.
+* Bumped vendored `libdivecomputer` from the `0.9.0-devel` snapshot to the
+  **`0.9.0` release** (2025-06-30). New over BLE: **Mares Sirius**, plus other
+  now-selectable models — Mares Puck Air 2 / Quad Ci / Puck 4 / Puck Lite,
+  Shearwater Tern / Peregrine TX, Aqualung i330R / Apeks DSX, Halcyon Symbios,
+  Scubapro G3, and more (they appear in `supportedComputers`; only Mares gets
+  a scan-routing `BleProfile` so far). The `maresBluelink` profile now defaults
+  its `productHint` to `Sirius`. `dc_descriptor_iterator` was migrated to
+  `dc_descriptor_iterator_new`. Android `.so` files are now 16 KB-page aligned
+  (Android 15+). Native binaries are rebuilt by the new `native/build/` recipe
+  (Windows DLL + 4 Android ABIs); the macOS `.dylib` is not yet covered by it,
+  so Sirius will not resolve on macOS.
 * `download()` now returns the dive computer's complete log in all build
   modes. Debug builds previously stopped after 5 dives.
 * Serial: `download()` takes an optional `serialPort` and a new
