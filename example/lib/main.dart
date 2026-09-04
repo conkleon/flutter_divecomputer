@@ -165,9 +165,20 @@ class _MyAppState extends State<MyApp> {
         final dir = await getExternalStorageDirectory() ??
             await getApplicationDocumentsDirectory();
         final outFile = File('${dir.path}/petrel_dives.jsonl');
-        // Resume-ish: keep what's already in the file, tell the plugin which
-        // dive hashes we have so it skips re-parsing them, and only append
-        // the new ones.
+        // A marker written only after a run that reached a known/terminal dive
+        // (SyncStatus.completed or .stoppedAtKnownDive). Its presence means the
+        // JSONL is verified-complete back from this fingerprint, so the next
+        // run can hand it to `lastFingerprint` for a real early stop — the
+        // device transmits only genuinely new dives. Absent it, an interrupted
+        // first backfill is still missing OLDER dives, and `lastFingerprint`
+        // would make the newest-first walk stop before reaching the gap.
+        final markerFile = File('${dir.path}/petrel_dives.newest');
+        final completeFrom = (await markerFile.exists())
+            ? (await markerFile.readAsString()).trim()
+            : null;
+        // Every hash already on disk — the slow-path fallback when there is no
+        // marker: the device still streams every dive's bytes, but the plugin
+        // skips re-parsing these.
         final known = <String>{};
         if (await outFile.exists()) {
           for (final line in await outFile.readAsLines()) {
@@ -177,14 +188,22 @@ class _MyAppState extends State<MyApp> {
             } catch (_) {/* partial trailing line */}
           }
         }
+        final topUp = completeFrom != null && completeFrom.isNotEmpty;
         var count = known.length;
         var lastDrained = DateTime.now();
         final pending = StringBuffer();
         status.value = known.isEmpty
             ? 'Opening connection…\nKeep the Petrel on its BT screen, screen on.'
-            : 'Resuming — ${known.length} dives already saved.\n'
-                'Opening connection…';
+            : topUp
+                ? 'Topping up — ${known.length} dives saved, fetching only '
+                    'newer ones.\nOpening connection…'
+                : 'Resuming backfill — ${known.length} dives saved (full '
+                    're-read).\nOpening connection…';
         final sub = dc.diveStream.listen((dive) {
+          // Skip anything already on disk. Normally the device sends only new
+          // dives, but a stale marker (its dive no longer on the computer)
+          // falls back to a full walk that would re-emit saved dives.
+          if (!known.add(dive.hash)) return;
           count++;
           pending.writeln(jsonEncode(dive.toJson()));
           // Flush every ~2s or every 20 dives — cheap, and bounds loss.
@@ -214,8 +233,22 @@ class _MyAppState extends State<MyApp> {
             computer: computer,
             transport: ComputerTransport.bluetooth,
             endpoint: picked.address,
-            knownFingerprints: known,
+            // Marker present: fast top-up — the device stops as soon as it
+            // reaches this dive. Otherwise the slow poor-man's resume.
+            lastFingerprint: topUp ? completeFrom : null,
+            knownFingerprints: topUp ? null : known,
           ));
+          // completed  → walked the whole log; fingerprints.first is the newest
+          //              dive on the device.
+          // stoppedAtKnownDive → top-up reached a dive we already had;
+          //              fingerprints holds only the new dives (newest-first),
+          //              or is empty when there was nothing new.
+          // Either way the log is now whole from fingerprints.first back, so
+          // advance the marker. Leave it untouched on a failed run.
+          if (result.status != SyncStatus.failed &&
+              result.fingerprints.isNotEmpty) {
+            await markerFile.writeAsString(result.fingerprints.first);
+          }
           status.value = switch (result.status) {
             SyncStatus.failed => 'Stopped at $count dives: ${result.error}\n'
                 'Re-run — it skips what is already saved.',
